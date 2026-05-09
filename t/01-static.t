@@ -157,6 +157,7 @@ Content-Encoding: zstd
 [error]
 
 
+
 === TEST 8: zstd_static always (file does not exist)
 --- config
     location /test2 {
