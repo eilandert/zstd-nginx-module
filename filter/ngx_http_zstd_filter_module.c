@@ -723,7 +723,7 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                         if (*p == '0') {
                             /* Check for q=0 or q=0.0... patterns */
                             p++;
-                            
+
                             /* Just "0" with no decimal = q=0 → not acceptable */
                             if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
                                 return NGX_DECLINED;
@@ -732,24 +732,24 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                             /* Check for decimal: q=0.xxx */
                             if (*p == '.') {
                                 p++;
-                                
+
                                 /* Check if all fractional digits are 0 */
-                                while (p < ae->data + ae->len && ngx_isdigit(*p)) {
+                                while (p < ae->data + ae->len && *p >= '0' && *p <= '9') {
                                     if (*p != '0') {
                                         /* Non-zero fractional part: q=0.xxx (x>0) → accept */
                                         return NGX_OK;
                                     }
                                     p++;
                                 }
-                                
+
                                 /* All zeros (q=0.0 or q=0.00, etc.) → not acceptable */
                                 return NGX_DECLINED;
                             }
-                            
+
                             /* Malformed: q=0X where X is not decimal point or end → accept (lenient) */
                             return NGX_OK;
                         }
-                        
+
                         /* q=1 or any other value → accept (assume well-formed) */
                         return NGX_OK;
                     }

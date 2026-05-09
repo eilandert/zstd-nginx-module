@@ -60,12 +60,12 @@ server {
 
 # Installation
 
-To use theses modules, configure your nginx branch with `--add-module=/path/to/zstd-nginx-module`. Several points should be taken care of.
+To use these modules, configure nginx with `--add-dynamic-module=/path/to/zstd-nginx-module` for dynamic module loading. Several points should be taken care of.
 
-* You can set environment variables `ZSTD_INC` and `ZSTD_LIB` to specify the path to `zstd.h` and the path to zstd shared library respectively.
-* static library will be attempted prior to dynamic library, since this Nginx module uses some **advanced APIs** where static linking is recommended.
-* System's zstd bundle will be linked if `ZSTD_INC` and `ZSTD_LIB` are not specified.
-* Both `ngx_http_zstd_static_module` and `ngx_http_zstd_filter_module` will be configured.
+* Set environment variables `ZSTD_INC` (for `zstd.h`) and `ZSTD_LIB` (for zstd library path) if using a custom zstd installation.
+* Static ZSTD library linking is preferred over dynamic linking for stability, as this module uses advanced APIs.
+* If `ZSTD_INC` and `ZSTD_LIB` are not set, the system's zstd bundle will be used.
+* Both filter module (`ngx_http_zstd_filter_module`) and static module (`ngx_http_zstd_static_module`) are compiled.
 
 # Directives
 
@@ -75,9 +75,9 @@ The `ngx_http_zstd_filter_module` module is a filter that compresses responses u
 
 ### zstd_dict_file
 
-**Syntax:** *zstd_dict_file /path/to/dict;*  
-**Default:** *-*  
-**Context:** *http*  
+**Syntax:** *zstd_dict_file /path/to/dict;*
+**Default:** *-*
+**Context:** *http*
 
 Specifies the external dictionary.
 
@@ -85,40 +85,40 @@ Specifies the external dictionary.
 
 ### zstd
 
-**Syntax:** *zstd on | off;*  
-**Default:** *zstd off;*  
+**Syntax:** *zstd on | off;*
+**Default:** *zstd off;*
 **Context:** *http, server, location, if in location*
 
 Enables or disables zstd compression for response.
 
 ### zstd_comp_level
 
-**Syntax:** *zstd_comp_level level;*  
-**Default:** *zstd_comp_level 1;*  
+**Syntax:** *zstd_comp_level level;*
+**Default:** *zstd_comp_level 1;*
 **Context:** *http, server, location*
 
 Sets a zstd compression level of a response. Acceptable values are in the range from 1 to `ZSTD_maxCLevel()`.
 
 ### zstd_min_length
 
-**Syntax:** *zstd_min_length length;*  
-**Default:** *zstd_min_length 20;*  
+**Syntax:** *zstd_min_length length;*
+**Default:** *zstd_min_length 20;*
 **Context:** *http, server, location*
 
 Sets the minimum length of a response that will be compressed by zstd. The length is determined only from the `Content-Length` response header field.
 
 ### zstd_types
 
-**Syntax:** *zstd_types mime-type ...;*  
-**Default:** *zstd_types text/html;*  
+**Syntax:** *zstd_types mime-type ...;*
+**Default:** *zstd_types text/html;*
 **Context:** *http, server, location*
 
 Enables zstd of responses for the specified MIME types in addition to `text/html`. The special value `*` matches any MIME type.
 
 ### zstd_buffers
 
-**Syntax:** *zstd_buffers number size;*  
-**Default:** *zstd_buffers 32 4k | 16 8k;*  
+**Syntax:** *zstd_buffers number size;*
+**Default:** *zstd_buffers 32 4k | 16 8k;*
 **Context:** *http, server, location*
 
 Sets the number and size of buffers used to compress a response. By default the buffer size is equal to one memory page. This is either 4K or 8K, depending on a platform.
@@ -129,9 +129,9 @@ The `ngx_http_zstd_static_module` module allows sending precompressed files with
 
 ### zstd_static
 
-**Syntax:**	*zstd_static on | off | always;*  
-**Default:** *zstd_static off;*  
-**Context:** *http, server, location*  
+**Syntax:**	*zstd_static on | off | always;*
+**Default:** *zstd_static off;*
+**Context:** *http, server, location*
 
 Enables ("on") or disables ("off") checking the existence of precompressed files. The following directives are also taken into account: `gzip_vary`.
 
