@@ -355,6 +355,11 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         ngx_chain_update_chains(r->pool, &ctx->free, &ctx->busy, &ctx->out,
                                 (ngx_buf_tag_t) &ngx_http_zstd_filter_module);
 
+        /* After chain update, buffers may have been recycled or reassigned.
+         * Invalidate ctx->out_buf to force fresh buffer allocation/validation
+         * on next compression iteration to prevent use-after-free of recycled buffers. */
+        ctx->out_buf = NULL;
+
         ctx->last_out = &ctx->out;
         ctx->nomem = 0;
         flush = 0;
@@ -400,6 +405,16 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
                    ctx->buffer_in.src, ctx->buffer_in.pos, ctx->buffer_in.size,
                    ctx->buffer_out.dst, ctx->buffer_out.pos,
                    ctx->buffer_out.size, ctx->flush, ctx->redo);
+
+    /* Validate compression state to detect corrupted context early */
+    if (ctx->action != NGX_HTTP_ZSTD_FILTER_COMPRESS
+        && ctx->action != NGX_HTTP_ZSTD_FILTER_FLUSH
+        && ctx->action != NGX_HTTP_ZSTD_FILTER_END) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "invalid zstd compression action: %d; expected 0-2",
+                      ctx->action);
+        return NGX_ERROR;
+    }
 
     pos_in = ctx->buffer_in.pos;
     pos_out = ctx->buffer_out.pos;
@@ -576,6 +591,15 @@ ngx_http_zstd_filter_get_buf(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 
     ctx->buffer_out.dst = ctx->out_buf->pos;
     ctx->buffer_out.pos = 0;
+
+    /* Validate buffer pointers to detect corruption before using in ZSTD */
+    if (ctx->out_buf->end < ctx->out_buf->start) {
+        ngx_log_error(NGX_LOG_ALERT, NULL, 0,
+                      "corrupted output buffer: end (%p) < start (%p)",
+                      ctx->out_buf->end, ctx->out_buf->start);
+        return NGX_ERROR;
+    }
+
     ctx->buffer_out.size = ctx->out_buf->end - ctx->out_buf->start;
 
     return NGX_OK;
@@ -681,7 +705,7 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                     p++;
                 }
 
-                /* Look for q= parameter */
+                /* Look for q= parameter (RFC 7231) */
                 if (p + 1 < ae->data + ae->len && ngx_tolower(p[0]) == 'q' && p[1] == '=') {
                     p += 2;
                     /* Skip whitespace after = */
@@ -689,40 +713,50 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                         p++;
                     }
 
-                    /* Parse quality value; RFC 7231 format is "0" or "1" or "0.x" */
+                    /* Parse quality value.
+                     * RFC 7231: weight = OWS ";" OWS "q=" qvalue
+                     * qvalue = ( "0" [ "." 0*3DIGIT ] ) / ( "1" [ "." 0*3("0") ] )
+                     * q=0 or q=0.0 (and variants) = not acceptable → decline
+                     * q=1 or any q > 0 = acceptable → accept
+                     */
                     if (p < ae->data + ae->len) {
                         if (*p == '0') {
-                            /* Check for q=0 (explicitly not acceptable) */
+                            /* Check for q=0 or q=0.0... patterns */
                             p++;
-                            end = p;
-                            while (end < ae->data + ae->len && (*end == ',' || *end == ' ' || *end == ';')) {
-                                end++;
-                            }
-                            /* If it's just "0" or "0." with nothing after, q=0 */
+                            
+                            /* Just "0" with no decimal = q=0 → not acceptable */
                             if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
                                 return NGX_DECLINED;
                             }
+
+                            /* Check for decimal: q=0.xxx */
                             if (*p == '.') {
                                 p++;
-                                /* Check if all digits after decimal are 0 */
+                                
+                                /* Check if all fractional digits are 0 */
                                 while (p < ae->data + ae->len && ngx_isdigit(*p)) {
                                     if (*p != '0') {
+                                        /* Non-zero fractional part: q=0.xxx (x>0) → accept */
                                         return NGX_OK;
                                     }
                                     p++;
                                 }
-                                /* All zeros after decimal: q=0.0... means not acceptable */
-                                if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-                                    return NGX_DECLINED;
-                                }
+                                
+                                /* All zeros (q=0.0 or q=0.00, etc.) → not acceptable */
+                                return NGX_DECLINED;
                             }
+                            
+                            /* Malformed: q=0X where X is not decimal point or end → accept (lenient) */
+                            return NGX_OK;
                         }
-                        /* For q=1 or q=0.x (x>0), accept */
+                        
+                        /* q=1 or any other value → accept (assume well-formed) */
+                        return NGX_OK;
                     }
                 }
-
             }
 
+            /* No quality value specified → accept */
             return NGX_OK;
         }
     }
@@ -888,6 +922,19 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             }
 
             size = ngx_file_size(&info);
+
+            /* Validate dictionary file size to prevent DoS via memory exhaustion */
+            #define NGX_HTTP_ZSTD_MAX_DICT_SIZE (10 * 1024 * 1024) /* 10 MB limit */
+            if (size > NGX_HTTP_ZSTD_MAX_DICT_SIZE) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "dictionary file too large: %uz bytes "
+                                   "(limit: %d bytes)",
+                                   size, NGX_HTTP_ZSTD_MAX_DICT_SIZE);
+
+                rc = NGX_CONF_ERROR;
+                goto close;
+            }
+
             buf = ngx_palloc(cf->pool, size);
             if (buf == NULL) {
                 rc = NGX_CONF_ERROR;
@@ -912,15 +959,19 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                 goto close;
             }
 
-            conf->dict = ZSTD_createCDict_byReference(buf, size, conf->level);
+            conf->dict = ZSTD_createCDict(buf, size, conf->level);
             if (conf->dict == NULL) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "ZSTD_createCDict_byReference() failed");
+                                   "ZSTD_createCDict() failed");
                 rc = NGX_CONF_ERROR;
                 goto close;
             }
 
-            /* Register cleanup handler to free dictionary when config is destroyed */
+            /* Register cleanup handler to free dictionary when config is destroyed.
+             * Note: Using ZSTD_createCDict() (copy mode) instead of _byReference()
+             * to avoid use-after-free during config reloads. Dictionary buffer is
+             * copied into ZSTD's internal memory, so config pool cleanup can safely
+             * free the original buf without affecting in-flight compressions. */
             {
                 ngx_pool_cleanup_t  *cln;
 
@@ -1060,9 +1111,17 @@ ngx_http_zstd_comp_level(ngx_conf_t *cf, void *post, void *data)
 {
     ngx_int_t  *np = data;
 
-    if (*np == 0 || *np < (ngx_int_t)ZSTD_minCLevel() || *np > ZSTD_maxCLevel()) {
+    /* Validate compression level range per RFC 7231.
+     * ZSTD supports both positive (1-22) and negative (-131072 to -1) levels.
+     * - Positive levels: higher number = more compression
+     * - Negative levels: faster decompression speeds
+     * - 0: Use ZSTD default compression level (ZSTD_CLEVEL_DEFAULT)
+     * Range: ZSTD_minCLevel() to ZSTD_maxCLevel() (typically -131072 to 22)
+     */
+    if (*np < (ngx_int_t)ZSTD_minCLevel() || *np > ZSTD_maxCLevel()) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "zstd compress level must between %i and %i excluding 0",
+                           "zstd compression level must be between %i and %i "
+                           "(0 = default, negative = faster, positive = slower/better)",
                            (ngx_int_t)ZSTD_minCLevel(), ZSTD_maxCLevel());
 
         return NGX_CONF_ERROR;

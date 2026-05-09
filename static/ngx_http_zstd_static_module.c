@@ -99,7 +99,9 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    if (r->uri.data[r->uri.len - 1] == '/') {
+    /* Validate URI length before accessing last byte to prevent underflow.
+     * While nginx guarantees non-empty URI, add defensive check for safety. */
+    if (r->uri.len == 0 || r->uri.data[r->uri.len - 1] == '/') {
         return NGX_DECLINED;
     }
 
@@ -343,7 +345,7 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                     p++;
                 }
 
-                /* Look for q= parameter */
+                /* Look for q= parameter (RFC 7231) */
                 if (p + 1 < ae->data + ae->len && ngx_tolower(p[0]) == 'q' && p[1] == '=') {
                     p += 2;
                     /* Skip whitespace after = */
@@ -351,40 +353,50 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                         p++;
                     }
 
-                    /* Parse quality value; RFC 7231 format is "0" or "1" or "0.x" */
+                    /* Parse quality value.
+                     * RFC 7231: weight = OWS ";" OWS "q=" qvalue
+                     * qvalue = ( "0" [ "." 0*3DIGIT ] ) / ( "1" [ "." 0*3("0") ] )
+                     * q=0 or q=0.0 (and variants) = not acceptable → decline
+                     * q=1 or any q > 0 = acceptable → accept
+                     */
                     if (p < ae->data + ae->len) {
                         if (*p == '0') {
-                            /* Check for q=0 (explicitly not acceptable) */
+                            /* Check for q=0 or q=0.0... patterns */
                             p++;
-                            end = p;
-                            while (end < ae->data + ae->len && (*end == ',' || *end == ' ' || *end == ';')) {
-                                end++;
-                            }
-                            /* If it's just "0" or "0." with nothing after, q=0 */
+                            
+                            /* Just "0" with no decimal = q=0 → not acceptable */
                             if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
                                 return NGX_DECLINED;
                             }
+
+                            /* Check for decimal: q=0.xxx */
                             if (*p == '.') {
                                 p++;
-                                /* Check if all digits after decimal are 0 */
+                                
+                                /* Check if all fractional digits are 0 */
                                 while (p < ae->data + ae->len && ngx_isdigit(*p)) {
                                     if (*p != '0') {
+                                        /* Non-zero fractional part: q=0.xxx (x>0) → accept */
                                         return NGX_OK;
                                     }
                                     p++;
                                 }
-                                /* All zeros after decimal: q=0.0... means not acceptable */
-                                if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-                                    return NGX_DECLINED;
-                                }
+                                
+                                /* All zeros (q=0.0 or q=0.00, etc.) → not acceptable */
+                                return NGX_DECLINED;
                             }
+                            
+                            /* Malformed: q=0X where X is not decimal point or end → accept (lenient) */
+                            return NGX_OK;
                         }
-                        /* For q=1 or q=0.x (x>0), accept */
+                        
+                        /* q=1 or any other value → accept (assume well-formed) */
+                        return NGX_OK;
                     }
                 }
-
             }
 
+            /* No quality value specified → accept */
             return NGX_OK;
         }
     }
