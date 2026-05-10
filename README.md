@@ -17,6 +17,7 @@ An nginx module for [Zstandard (zstd)](https://facebook.github.io/zstd/) compres
     * [zstd_max_length](#zstd_max_length)
     * [zstd_types](#zstd_types)
     * [zstd_buffers](#zstd_buffers)
+    * [zstd_target_cblock_size](#zstd_target_cblock_size)
     * [zstd_dict_file](#zstd_dict_file)
   * [ngx_http_zstd_static_module](#ngx_http_zstd_static_module)
     * [zstd_static](#zstd_static)
@@ -217,6 +218,39 @@ zstd_types
 Configures the number and size of output buffers used during compression. The total buffer space is `number × size`. The defaults give a fixed 128 KB of buffer space regardless of platform page size, which is appropriate for most workloads.
 
 Increasing these values allows larger chunks to be accumulated before writing, potentially improving throughput at the cost of higher per-request memory usage.
+
+---
+
+### zstd_target_cblock_size
+
+**Syntax:** `zstd_target_cblock_size size;`  
+**Default:** `—` (disabled, uses ZSTD library defaults)  
+**Context:** `http, server, location`  
+**Requires:** libzstd ≥ v1.5.6
+
+Sets the target compressed block size for zstd frames. Controlling block size improves incremental response parsing, particularly in browsers where CSS/JavaScript in the response head must be available as soon as possible.
+
+> **Rationale:** When the zstd encoder produces large compressed blocks, the entire block must be decompressed before any content within it becomes available to the client. Smaller blocks allow incremental decompression and earlier access to critical resources. For example, CSS in `<head>` can be parsed sooner if it lands in an early, smaller block.
+
+> **Compatibility:** This directive requires libzstd v1.5.6 or later. On older versions, the directive is silently ignored. If not set (value 0 or unset), zstd uses its internal defaults, typically yielding blocks of 128–256 KB depending on the compression level and content.
+
+**Example:**
+
+```nginx
+http {
+    # Smaller blocks = faster incremental parsing, slightly lower compression ratio
+    zstd_target_cblock_size 65536;  # 64 KB blocks
+}
+```
+
+**Effect:** Lower values increase the number of blocks and may reduce compression ratio slightly, but improve streaming/incremental decompression. Common values:
+
+| Value | Use Case |
+|---|---|
+| Not set | Default behavior; good all-around balance |
+| `16384` (16 KB) | Very aggressive incremental parsing; reduces ratio notably |
+| `65536` (64 KB) | Moderate; CSS/JS in head typically available faster |
+| `262144` (256 KB) | Conservative; minimal ratio impact |
 
 ---
 

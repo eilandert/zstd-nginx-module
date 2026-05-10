@@ -271,6 +271,63 @@ Update `syntax` job parameters
 
 ---
 
+## Pre-Commit Hook
+
+A Git pre-commit hook is configured to automatically run the CI build script before each commit.
+
+### How it Works
+
+When you attempt to commit changes:
+1. The `.git/hooks/pre-commit` hook is triggered
+2. Runs `tools/ci-build.sh` to compile against nginx
+3. If compilation **passes**: commit is allowed ✅
+4. If compilation **fails**: commit is blocked ❌
+
+### Usage
+
+The hook runs automatically - no additional setup needed. Just commit normally:
+
+```bash
+git add filter/ngx_http_zstd_filter_module.c
+git commit -m "fix: my changes"
+
+# Hook runs automatically before commit
+# ✅ CI build passed - commit allowed
+# [master 1a2b3c4] fix: my changes
+```
+
+### Bypassing the Hook (Not Recommended)
+
+If you need to skip the hook for testing purposes:
+
+```bash
+git commit --no-verify -m "test: skipping CI build"
+```
+
+**Warning:** Commits should always pass CI before pushing.
+
+### Hook Output
+
+```
+Running CI build before commit...
+
+==========================================================================
+  zstd-nginx-module CI Build
+==========================================================================
+
+Module: /opt/packages/modules/zstd-nginx-module
+Nginx version: 1.29.8
+Build directory: /tmp/nginx-build-XXXXX
+
+[... build output ...]
+
+✅ CI build passed - commit allowed
+[master a1b2c3d] chore: my changes
+ 1 file changed, X insertion(s)+
+```
+
+---
+
 ## Status Badges
 
 To add CI status to README.md:
