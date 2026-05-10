@@ -165,7 +165,9 @@ zstd_min_length 1000;  # skip compression for responses smaller than 1KB
 **Default:** `—` (no limit)  
 **Context:** `http, server, location`
 
-Sets the maximum response size that will be compressed. Responses larger than this value are passed through uncompressed. The size is taken from the `Content-Length` response header; responses without `Content-Length` are always eligible.
+Sets the maximum response size that will be compressed. Responses larger than this value are passed through uncompressed. The size is taken from the `Content-Length` response header.
+
+> **Important:** `zstd_max_length` is **not enforced** for streaming or chunked responses that do not include a `Content-Length` header. Such responses are always compressed regardless of their final size. If you need to limit CPU exposure for large streaming responses (e.g. proxied video or large file downloads), ensure upstream always sets `Content-Length`, or avoid enabling zstd on those locations.
 
 By default there is no upper limit. You may want to set one if very large responses (e.g. multi-megabyte file downloads) should bypass compression to avoid holding the worker process busy.
 
