@@ -426,16 +426,6 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
                    ctx->buffer_out.dst, ctx->buffer_out.pos,
                    ctx->buffer_out.size, ctx->flush, ctx->redo);
 
-    /* Validate compression state to detect corrupted context early */
-    if (ctx->action != NGX_HTTP_ZSTD_FILTER_COMPRESS
-        && ctx->action != NGX_HTTP_ZSTD_FILTER_FLUSH
-        && ctx->action != NGX_HTTP_ZSTD_FILTER_END) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "invalid zstd compression action: %d; expected 0-2",
-                      ctx->action);
-        return NGX_ERROR;
-    }
-
     pos_in = ctx->buffer_in.pos;
     pos_out = ctx->buffer_out.pos;
 
