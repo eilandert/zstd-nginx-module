@@ -92,7 +92,7 @@ load_module modules/ngx_http_zstd_static_module.so;
 
 * Both `ngx_http_zstd_filter_module` and `ngx_http_zstd_static_module` are compiled together.
 * If you are using a custom zstd installation, set `ZSTD_INC` (path to `zstd.h`) and `ZSTD_LIB` (path to the library) before running `configure`. If unset, the system-installed zstd is used.
-* Static linking (`libzstd.a`) is preferred over dynamic linking. This module uses advanced zstd streaming APIs that may not be stable across shared library versions.
+* Dynamic modules (`.so`) require dynamic linking against `libzstd.so`. The build scripts auto-detect and prefer this. Ensure the zstd shared library is installed and available at runtime (`libzstd-dev` on Debian/Ubuntu, `libzstd-devel` on RHEL/Fedora).
 
 # Directives
 
