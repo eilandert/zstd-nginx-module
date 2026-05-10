@@ -176,6 +176,7 @@ jobs:
           cd nginx-${{ env.NGINX_VERSION }}
           ./configure \
             --with-compat \
+            --with-debug \
             --with-cc-opt="-DZSTD_STATIC_LINKING_ONLY $(pkg-config --cflags libzstd zlib libpcre2-8)" \
             --with-ld-opt="$(pkg-config --libs libzstd zlib libpcre2-8)" \
             --without-http_charset_module \
