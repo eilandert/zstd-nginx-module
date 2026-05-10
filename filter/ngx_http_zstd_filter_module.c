@@ -1021,21 +1021,34 @@ ngx_http_zstd_comp_level(ngx_conf_t *cf, void *post, void *data)
 
     (void)post;
 
-    /* Validate compression level range per RFC 7231.
+    /*
+     * Validate compression level range.
      * ZSTD supports both positive (1-22) and negative (-131072 to -1) levels.
      * - Positive levels: higher number = more compression
-     * - Negative levels: faster decompression speeds
+     * - Negative levels: faster speed, less compression
      * - 0: Use ZSTD default compression level (ZSTD_CLEVEL_DEFAULT)
-     * Range: ZSTD_minCLevel() to ZSTD_maxCLevel() (typically -131072 to 22)
+     *
+     * ZSTD_minCLevel() was introduced in zstd 1.4.0. On older libraries
+     * (zstd < 1.4.0) negative levels are not supported; clamp to 1.
      */
-    if (*np < (ngx_int_t)ZSTD_minCLevel() || *np > ZSTD_maxCLevel()) {
+#if ZSTD_VERSION_NUMBER >= 10400
+    if (*np < (ngx_int_t) ZSTD_minCLevel() || *np > ZSTD_maxCLevel()) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "zstd compression level must be between %i and %i "
-                           "(0 = default, negative = faster, positive = slower/better)",
-                           (ngx_int_t)ZSTD_minCLevel(), ZSTD_maxCLevel());
-
+                           "(0 = default, negative = faster, positive = "
+                           "slower/better)",
+                           (ngx_int_t) ZSTD_minCLevel(), ZSTD_maxCLevel());
         return NGX_CONF_ERROR;
     }
+#else
+    if (*np < 1 || *np > ZSTD_maxCLevel()) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "zstd compression level must be between 1 and %i "
+                           "(zstd < 1.4.0: negative levels not supported)",
+                           ZSTD_maxCLevel());
+        return NGX_CONF_ERROR;
+    }
+#endif
 
     return NGX_CONF_OK;
 }

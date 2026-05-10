@@ -27,7 +27,7 @@ if [ -n "$ZSTD_INC" -o -n "$ZSTD_LIB" ]; then
     if [ $ngx_found = no ]; then
         # then try the dynamic shared library
         ngx_feature="ZStandard dynamic library in $ZSTD_INC and $ZSTD_LIB"
-        ngx_zstd_opt_L="-L$ZSTD_LIB -lzstd -Wl,-rpath, $ZSTD_LIB"
+        ngx_zstd_opt_L="-L$ZSTD_LIB -lzstd -Wl,-rpath,$ZSTD_LIB"
 
         SAVED_CC_TAST_FLAGS=$CC_TEST_FLAGS
         CC_TEST_FLAGS="$ngx_zstd_opt_I $CC_TEST_FLAGS"
@@ -67,34 +67,44 @@ else
     NGX_TEST_LD_OPT=$SAVED_NGX_TEST_LD_OPT
 
     if [ $ngx_found = no ]; then
+        # Dynamic auto-discovery failed. Try pkg-config (portable across
+        # Linux, FreeBSD, OpenBSD, Gentoo, Rocky/RHEL) before giving up.
+        # Note: -l:libzstd.a is GNU ld only and not used here.
+        ngx_pkgconf=
+        if command -v pkgconf > /dev/null 2>&1; then
+            ngx_pkgconf=pkgconf
+        elif command -v pkg-config > /dev/null 2>&1; then
+            ngx_pkgconf=pkg-config
+        fi
 
-        ngx_feature="ZStandard static library"
-        ngx_zstd_opt_I="-DZSTD_STATIC_LINKING_ONLY"
-        ngx_zstd_opt_L="-l:libzstd.a"
-        SAVED_CC_TAST_FLAGS=$CC_TEST_FLAGS
-        CC_TEST_FLAGS="$ngx_zstd_opt_I $CC_TEST_FLAGS"
-        SAVED_NGX_TEST_LD_OPT=$NGX_TEST_LD_OPT
-        NGX_TEST_LD_OPT="$ngx_zstd_opt_L $NGX_TEST_LD_OPT"
+        if [ -n "$ngx_pkgconf" ] && $ngx_pkgconf --exists libzstd 2>/dev/null; then
+            ngx_feature="ZStandard library via pkg-config"
+            ngx_zstd_opt_I="$($ngx_pkgconf --cflags libzstd)"
+            ngx_zstd_opt_L="$($ngx_pkgconf --libs libzstd)"
 
-        . auto/feature
+            SAVED_CC_TAST_FLAGS=$CC_TEST_FLAGS
+            CC_TEST_FLAGS="$ngx_zstd_opt_I $CC_TEST_FLAGS"
+            SAVED_NGX_TEST_LD_OPT=$NGX_TEST_LD_OPT
+            NGX_TEST_LD_OPT="$ngx_zstd_opt_L $NGX_TEST_LD_OPT"
+
+            . auto/feature
+
+            # restore
+            CC_TEST_FLAGS=$SAVED_CC_TAST_FLAGS
+            NGX_TEST_LD_OPT=$SAVED_NGX_TEST_LD_OPT
+        fi
 
         if [ $ngx_found = no ]; then
             cat << END
             $0: error: ngx_http_zstd_filter_module requires the ZStandard library.
+            Install libzstd-dev (Debian/Ubuntu), zstd-devel (RHEL/Rocky),
+            dev-libs/zstd (Gentoo), or security/zstd (FreeBSD/OpenBSD ports),
+            or set ZSTD_INC and ZSTD_LIB to the library location.
 END
             exit 1
         fi
-
-        # restore
-        CC_TEST_FLAGS=$SAVED_CC_TAST_FLAGS
-        NGX_TEST_LD_OPT=$SAVED_NGX_TEST_LD_OPT
-
-        cat << END
-        $0: warning: ngx_http_zstd_filter_module uses advanced ZStandard APIs (which are still considered experimental) while you are trying to link the dynamic shared library.
-END
     fi
 
-    # TODO we need more tries for the different OS port.
 fi
 
 NGX_LD_OPT="$ngx_zstd_opt_L $NGX_LD_OPT"
