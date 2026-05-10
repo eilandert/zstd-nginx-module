@@ -8,6 +8,8 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#include "../ngx_http_zstd_common.h"
+
 
 #define NGX_HTTP_ZSTD_STATIC_OFF        0
 #define NGX_HTTP_ZSTD_STATIC_ON         1
@@ -40,8 +42,6 @@ static ngx_command_t  ngx_http_zstd_static_commands[] = {
 
 
 static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_zstd_accept_encoding(ngx_str_t *ae);
-static ngx_int_t ngx_http_zstd_ok(ngx_http_request_t *r);
 static void * ngx_http_zstd_static_create_loc_conf(ngx_conf_t *cf);
 static char * ngx_http_zstd_static_merge_loc_conf(ngx_conf_t *cf, void *parent,
     void *child);
@@ -286,119 +286,6 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     out.next = NULL;
 
     return ngx_http_output_filter(r, &out);
-}
-
-
-static ngx_int_t
-ngx_http_zstd_ok(ngx_http_request_t *r)
-{
-    ngx_table_elt_t  *ae;
-
-    if (r != r->main) {
-        return NGX_DECLINED;
-    }
-
-    ae = r->headers_in.accept_encoding;
-    if (ae == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (ae->value.len < sizeof("zstd") - 1) {
-        return NGX_DECLINED;
-    }
-
-    if (ngx_http_zstd_accept_encoding(&ae->value) != NGX_OK) {
-        return NGX_DECLINED;
-    }
-
-
-    r->gzip_tested = 1;
-    r->gzip_ok = 0;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_zstd_accept_encoding(ngx_str_t *ae)
-{
-    u_char  *p;
-
-    p = ngx_strcasestrn(ae->data, (char *) "zstd", sizeof("zstd") - 2);
-    if (p == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (p == ae->data || (*(p - 1) == ',' || *(p - 1) == ' ')) {
-
-        p += sizeof("zstd") - 1;
-
-        if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-            /* Found "zstd" token; now check quality value if present */
-            if (*p == ';') {
-                p++;
-                /* Skip whitespace */
-                while (p < ae->data + ae->len && (*p == ' ' || *p == '\t')) {
-                    p++;
-                }
-
-                /* Look for q= parameter (RFC 7231) */
-                if (p + 1 < ae->data + ae->len && ngx_tolower(p[0]) == 'q' && p[1] == '=') {
-                    p += 2;
-                    /* Skip whitespace after = */
-                    while (p < ae->data + ae->len && (*p == ' ' || *p == '\t')) {
-                        p++;
-                    }
-
-                    /* Parse quality value.
-                     * RFC 7231: weight = OWS ";" OWS "q=" qvalue
-                     * qvalue = ( "0" [ "." 0*3DIGIT ] ) / ( "1" [ "." 0*3("0") ] )
-                     * q=0 or q=0.0 (and variants) = not acceptable → decline
-                     * q=1 or any q > 0 = acceptable → accept
-                     */
-                    if (p < ae->data + ae->len) {
-                        if (*p == '0') {
-                            /* Check for q=0 or q=0.0... patterns */
-                            p++;
-
-                            /* Just "0" with no decimal = q=0 → not acceptable */
-                            if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-                                return NGX_DECLINED;
-                            }
-
-                            /* Check for decimal: q=0.xxx */
-                            if (*p == '.') {
-                                p++;
-
-                                /* Check if all fractional digits are 0 */
-                                while (p < ae->data + ae->len && *p >= '0' && *p <= '9') {
-                                    if (*p != '0') {
-                                        /* Non-zero fractional part: q=0.xxx (x>0) → accept */
-                                        return NGX_OK;
-                                    }
-                                    p++;
-                                }
-
-                                /* All zeros (q=0.0 or q=0.00, etc.) → not acceptable */
-                                return NGX_DECLINED;
-                            }
-
-                            /* Malformed: q=0X where X is not decimal point or end → accept (lenient) */
-                            return NGX_OK;
-                        }
-
-                        /* q=1 or any other value → accept (assume well-formed) */
-                        return NGX_OK;
-                    }
-                }
-            }
-
-            /* No quality value specified → accept */
-            return NGX_OK;
-        }
-    }
-
-    return NGX_DECLINED;
 }
 
 

@@ -10,10 +10,14 @@
 
 #include <zstd.h>
 
+#include "../ngx_http_zstd_common.h"
+
 
 #define NGX_HTTP_ZSTD_FILTER_COMPRESS       0
 #define NGX_HTTP_ZSTD_FILTER_FLUSH          1
 #define NGX_HTTP_ZSTD_FILTER_END            2
+
+#define NGX_HTTP_ZSTD_MAX_DICT_SIZE  (10 * 1024 * 1024)  /* 10 MB limit */
 
 
 typedef struct {
@@ -59,7 +63,6 @@ typedef struct {
     size_t                       bytes_out;
 
     unsigned                     action:2;
-    unsigned                     last_action:2;
     unsigned                     last:1;
     unsigned                     redo:1;
     unsigned                     flush:1;
@@ -90,8 +93,6 @@ static ZSTD_CStream *ngx_http_zstd_filter_create_cstream(ngx_http_request_t *r,
     ngx_http_zstd_ctx_t *ctx);
 static ngx_int_t ngx_http_zstd_filter_compress(ngx_http_request_t *r,
     ngx_http_zstd_ctx_t *ctx);
-static ngx_int_t ngx_http_zstd_accept_encoding(ngx_str_t *ae);
-static ngx_int_t ngx_http_zstd_ok(ngx_http_request_t *r);
 static ngx_int_t ngx_http_zstd_filter_init(ngx_conf_t *cf);
 static void * ngx_http_zstd_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_zstd_init_main_conf(ngx_conf_t *cf, void *conf);
@@ -145,7 +146,7 @@ static ngx_command_t  ngx_http_zstd_filter_commands[] = {
       NULL },
 
     { ngx_string("zstd_min_length"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_zstd_loc_conf_t, min_length),
@@ -217,9 +218,6 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
            && r->headers_out.content_encoding->value.len)
        || (r->headers_out.content_length_n != -1
            && r->headers_out.content_length_n < zlcf->min_length)
-       || (zlcf->max_length != NGX_CONF_UNSET
-           && r->headers_out.content_length_n != -1
-           && r->headers_out.content_length_n > zlcf->max_length)
        || (zlcf->max_length != NGX_CONF_UNSET
            && r->headers_out.content_length_n != -1
            && r->headers_out.content_length_n > zlcf->max_length)
@@ -381,6 +379,7 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
         if (ctx->done) {
             rv = ZSTD_freeCStream(ctx->cstream);
+            ctx->cstream = NULL;
             if (ZSTD_isError(rv)) {
                 ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                               "ZSTD_freeCStream() failed: %s",
@@ -396,10 +395,16 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 failed:
 
     ctx->done = 1;
-    rv = ZSTD_freeCStream(ctx->cstream);
-    if (ZSTD_isError(rv)) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "ZSTD_freeCStream() failed: %s", ZSTD_getErrorName(rv));
+
+    if (ctx->cstream != NULL) {
+        rv = ZSTD_freeCStream(ctx->cstream);
+        if (ZSTD_isError(rv)) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "ZSTD_freeCStream() failed: %s",
+                          ZSTD_getErrorName(rv));
+        }
+
+        ctx->cstream = NULL;
     }
 
     return NGX_ERROR;
@@ -473,7 +478,6 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 
     if (rc > 0) {
         if (ctx->action == NGX_HTTP_ZSTD_FILTER_COMPRESS) {
-            ctx->last_action = ctx->action;
             ctx->action = NGX_HTTP_ZSTD_FILTER_FLUSH;
         }
 
@@ -483,7 +487,6 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
               && ctx->buffer_in.pos >= ctx->buffer_in.size
               && ctx->in == NULL) {
         ctx->redo = 1;
-        ctx->last_action = ctx->action;
         ctx->action = NGX_HTTP_ZSTD_FILTER_END;
 
         /* pending to call the ZSTD_endStream() */
@@ -491,7 +494,6 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         return NGX_AGAIN;
 
     } else if (ctx->action != NGX_HTTP_ZSTD_FILTER_END) {
-        ctx->last_action = ctx->action;
         ctx->action = NGX_HTTP_ZSTD_FILTER_COMPRESS; /* restore */
     }
 
@@ -700,119 +702,6 @@ failed:
 }
 
 
-static ngx_int_t
-ngx_http_zstd_accept_encoding(ngx_str_t *ae)
-{
-    u_char  *p;
-
-    p = ngx_strcasestrn(ae->data, (char *) "zstd", sizeof("zstd") - 2);
-    if (p == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (p == ae->data || (*(p - 1) == ',' || *(p - 1) == ' ')) {
-
-        p += sizeof("zstd") - 1;
-
-        if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-            /* Found "zstd" token; now check quality value if present */
-            if (*p == ';') {
-                p++;
-                /* Skip whitespace */
-                while (p < ae->data + ae->len && (*p == ' ' || *p == '\t')) {
-                    p++;
-                }
-
-                /* Look for q= parameter (RFC 7231) */
-                if (p + 1 < ae->data + ae->len && ngx_tolower(p[0]) == 'q' && p[1] == '=') {
-                    p += 2;
-                    /* Skip whitespace after = */
-                    while (p < ae->data + ae->len && (*p == ' ' || *p == '\t')) {
-                        p++;
-                    }
-
-                    /* Parse quality value.
-                     * RFC 7231: weight = OWS ";" OWS "q=" qvalue
-                     * qvalue = ( "0" [ "." 0*3DIGIT ] ) / ( "1" [ "." 0*3("0") ] )
-                     * q=0 or q=0.0 (and variants) = not acceptable → decline
-                     * q=1 or any q > 0 = acceptable → accept
-                     */
-                    if (p < ae->data + ae->len) {
-                        if (*p == '0') {
-                            /* Check for q=0 or q=0.0... patterns */
-                            p++;
-
-                            /* Just "0" with no decimal = q=0 → not acceptable */
-                            if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-                                return NGX_DECLINED;
-                            }
-
-                            /* Check for decimal: q=0.xxx */
-                            if (*p == '.') {
-                                p++;
-
-                                /* Check if all fractional digits are 0 */
-                                while (p < ae->data + ae->len && *p >= '0' && *p <= '9') {
-                                    if (*p != '0') {
-                                        /* Non-zero fractional part: q=0.xxx (x>0) → accept */
-                                        return NGX_OK;
-                                    }
-                                    p++;
-                                }
-
-                                /* All zeros (q=0.0 or q=0.00, etc.) → not acceptable */
-                                return NGX_DECLINED;
-                            }
-
-                            /* Malformed: q=0X where X is not decimal point or end → accept (lenient) */
-                            return NGX_OK;
-                        }
-
-                        /* q=1 or any other value → accept (assume well-formed) */
-                        return NGX_OK;
-                    }
-                }
-            }
-
-            /* No quality value specified → accept */
-            return NGX_OK;
-        }
-    }
-
-    return NGX_DECLINED;
-}
-
-
-static ngx_int_t
-ngx_http_zstd_ok(ngx_http_request_t *r)
-{
-    ngx_table_elt_t  *ae;
-
-    if (r != r->main) {
-        return NGX_DECLINED;
-    }
-
-    ae = r->headers_in.accept_encoding;
-    if (ae == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (ae->value.len < sizeof("zstd") - 1) {
-        return NGX_DECLINED;
-    }
-
-    if (ngx_http_zstd_accept_encoding(&ae->value) != NGX_OK) {
-        return NGX_DECLINED;
-    }
-
-
-    r->gzip_tested = 1;
-    r->gzip_ok = 0;
-
-    return NGX_OK;
-}
-
-
 static void *
 ngx_http_zstd_create_main_conf(ngx_conf_t *cf)
 {
@@ -910,13 +799,17 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     if (conf->enable && zmcf->dict_file.len > 0) {
 
-        if (conf->level == prev->level) {
+        if (conf->level == prev->level && prev->dict != NULL) {
+            /*
+             * Same compression level and parent already loaded the dict:
+             * reuse it to avoid redundant loading.
+             */
             conf->dict = prev->dict;
 
-        } else {
+        } else if (conf->dict == NULL) {
             /*
-             * compression level is different from the outer block,
-             * so we should create a seperate dict object.
+             * Either levels differ or parent was disabled (prev->dict == NULL):
+             * load the dict fresh for this location's compression level.
              */
 
             fd = ngx_open_file(zmcf->dict_file.data, NGX_FILE_RDONLY,
@@ -942,7 +835,6 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             size = ngx_file_size(&info);
 
             /* Validate dictionary file size to prevent DoS via memory exhaustion */
-            #define NGX_HTTP_ZSTD_MAX_DICT_SIZE (10 * 1024 * 1024) /* 10 MB limit */
             if (size > NGX_HTTP_ZSTD_MAX_DICT_SIZE) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "dictionary file too large: %uz bytes "
@@ -1084,7 +976,8 @@ ngx_http_zstd_ratio_variable(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    vv->data = ngx_pnalloc(r->pool, NGX_INT32_LEN + 3);
+    /* Two ngx_uint_t values (up to NGX_INT_T_LEN digits each) + '.' + '\0' */
+    vv->data = ngx_pnalloc(r->pool, NGX_INT_T_LEN * 2 + 2);
     if (vv->data == NULL) {
         return NGX_ERROR;
     }
@@ -1176,11 +1069,11 @@ ngx_conf_zstd_set_num_slot_with_negatives(ngx_conf_t *cf, ngx_command_t *cmd, vo
     value = cf->args->elts;
 
     if (*(value[1].data) == '-') {
-        // Parse ignoring the leading '-' character
+        /* Parse ignoring the leading '-' character */
         *np = ngx_atoi(value[1].data + 1, value[1].len - 1);
 
-        // NGX_ERROR is -1 so we need to check for that before making the parsed
-        // result negative
+        /* NGX_ERROR is -1 so we need to check for that before making the
+         * parsed result negative */
         if (*np == NGX_ERROR) {
             return (char *) "invalid number";
         }
