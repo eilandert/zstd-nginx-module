@@ -97,7 +97,6 @@ END
     # TODO we need more tries for the different OS port.
 fi
 
-CFLAGS="$ngx_zstd_opt_I $CFLAGS"
 NGX_LD_OPT="$ngx_zstd_opt_L $NGX_LD_OPT"
 
 # build the ngx_http_zstd_static_module
