@@ -60,49 +60,71 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
                     }
 
                     /*
-                     * Parse quality value.
-                     * RFC 7231: weight = OWS ";" OWS "q=" qvalue
-                     * qvalue = ( "0" [ "." 0*3DIGIT ] )
-                     *        / ( "1" [ "." 0*3("0") ] )
-                     * q=0 or q=0.0 (and variants) = not acceptable → decline
-                     * q=1 or any q > 0             = acceptable    → accept
+                     * Parse quality value per RFC 7231 §5.3.1:
+                     *   qvalue = ( "0" [ "." 0*3DIGIT ] )
+                     *          / ( "1" [ "." 0*3("0") ] )
+                     * Only "0" and "1" are valid leading digits.
+                     * Values outside [0,1] or malformed decimals are rejected.
                      */
                     if (p < ae->data + ae->len) {
                         if (*p == '0') {
                             p++;
 
-                            /* Just "0" with no decimal = q=0: not acceptable */
+                            /* q=0 with no decimal → not acceptable */
                             if (p == ae->data + ae->len
                                 || *p == ',' || *p == ' ' || *p == ';')
                             {
                                 return NGX_DECLINED;
                             }
 
-                            /* Check for decimal: q=0.xxx */
-                            if (*p == '.') {
-                                p++;
+                            /* Must be followed by '.' for a valid decimal */
+                            if (*p != '.') {
+                                return NGX_DECLINED;
+                            }
+                            p++;
 
-                                /* All-zero fractional part → not acceptable */
+                            /* Require at least one digit after the dot */
+                            if (p == ae->data + ae->len
+                                || *p < '0' || *p > '9')
+                            {
+                                return NGX_DECLINED;
+                            }
+
+                            /* All-zero fractional part → not acceptable */
+                            while (p < ae->data + ae->len
+                                   && *p >= '0' && *p <= '9')
+                            {
+                                if (*p != '0') {
+                                    return NGX_OK;
+                                }
+                                p++;
+                            }
+
+                            return NGX_DECLINED;
+
+                        } else if (*p == '1') {
+                            p++;
+
+                            /* q=1 with optional ".0*" suffix → accept */
+                            if (p < ae->data + ae->len && *p == '.') {
+                                p++;
                                 while (p < ae->data + ae->len
                                        && *p >= '0' && *p <= '9')
                                 {
                                     if (*p != '0') {
-                                        /* q=0.xxx (x>0) → accept */
-                                        return NGX_OK;
+                                        /* q=1.x where x>0 is invalid per RFC */
+                                        return NGX_DECLINED;
                                     }
                                     p++;
                                 }
-
-                                /* q=0.0 / q=0.00 / etc. → not acceptable */
-                                return NGX_DECLINED;
                             }
 
-                            /* Malformed: q=0X (lenient) → accept */
                             return NGX_OK;
-                        }
 
-                        /* q=1 or any other non-zero value → accept */
-                        return NGX_OK;
+                        } else {
+                            /* Leading digit other than 0 or 1: out of [0,1] */
+                            return NGX_DECLINED;
+                        }
                     }
                 }
             }
