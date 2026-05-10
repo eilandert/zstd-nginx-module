@@ -888,7 +888,7 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             {
                 ngx_pool_cleanup_t  *cln;
 
-                cln = ngx_pool_cleanup_add(cf->pool, sizeof(ZSTD_CDict *));
+                cln = ngx_pool_cleanup_add(cf->pool, 0);
                 if (cln == NULL) {
                     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                        "ngx_pool_cleanup_add() failed");
