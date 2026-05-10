@@ -254,6 +254,8 @@ Controls how pre-compressed `.zst` files are served.
 
 When set to `on`, the module sets `r->gzip_vary = 1`, which causes nginx to add a `Vary: Accept-Encoding` response header (controlled by [`gzip_vary`](https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip_vary)). Enable `gzip_vary on;` alongside `zstd_static on;` to ensure correct caching by proxies and CDNs.
 
+> **Warning (`always` mode):** When `zstd_static always` is set, `.zst` files are served to every client regardless of whether they advertise `Accept-Encoding: zstd`. No `Vary` header is emitted and no `Content-Encoding` negotiation occurs. Any client that does not support zstd will receive a compressed body it cannot decode. Only use `always` on locations where every client is guaranteed to support zstd — for example, internal service-to-service calls where you control both ends.
+
 **Example:**
 
 ```nginx
