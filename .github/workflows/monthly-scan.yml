@@ -46,7 +46,8 @@ jobs:
       - name: Analyze
         uses: github/codeql-action/analyze@v3
         with:
-          upload: true  # → Security → Code scanning tab
+          upload: true
+          category: /language:c-cpp
 
   trivy:
     name: Trivy (CVE in libzstd)
