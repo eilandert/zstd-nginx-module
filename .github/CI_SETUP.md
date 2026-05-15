@@ -29,10 +29,10 @@ Validates C code syntax without compiling full nginx:
 
 #### 2. Test Suite
 Runs the Perl test suite plus a truncation smoke test:
-- 23 filter module tests
+- 27 filter module tests
 - 18 static module tests
-- 1 JavaScript truncation smoke test
-- Total: 41 Perl tests + 1 end-to-end smoke test
+- 2 end-to-end smoke tests
+- Total: 45 Perl tests + 2 end-to-end smoke tests
 
 **What it covers:**
 - ✓ Encoding detection and priority
@@ -41,6 +41,8 @@ Runs the Perl test suite plus a truncation smoke test:
 - ✓ HTTP method handling
 - ✓ Pre-compressed file serving
 - ✓ gzip interaction
+- ✓ HEAD/204/205/304 no-body filter behaviour
+- ✓ Vary: Accept-Encoding emission when gzip_vary is enabled
 - ✓ Large JavaScript response integrity after zstd decompression
 
 **Runtime:** ~1-2 minutes

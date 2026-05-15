@@ -33,6 +33,20 @@ def parse_args() -> argparse.Namespace:
         help="Path to the zstd CLI used for decompression.",
     )
     parser.add_argument(
+        "--gzip-vary",
+        choices=("on", "off"),
+        default="off",
+        help="Whether to enable gzip_vary in the temporary nginx config.",
+    )
+    parser.add_argument(
+        "--expect-vary",
+        action="store_true",
+        help=(
+            "Require the response to include Vary: Accept-Encoding. "
+            "Useful when gzip_vary is enabled."
+        ),
+    )
+    parser.add_argument(
         "--fixture-lines",
         type=int,
         default=8192,
@@ -75,7 +89,7 @@ def build_fixture(path: pathlib.Path, lines: int) -> bytes:
     return data
 
 
-def write_config(conf_path: pathlib.Path, root_dir: pathlib.Path, port: int) -> None:
+def write_config(conf_path: pathlib.Path, root_dir: pathlib.Path, port: int, gzip_vary: str) -> None:
     conf_path.write_text(
         f"""
 worker_processes  1;
@@ -90,6 +104,7 @@ http {{
     access_log logs/access.log;
     default_type application/octet-stream;
     sendfile off;
+    gzip_vary {gzip_vary};
     keepalive_timeout 5;
     server {{
         listen 127.0.0.1:{port};
@@ -111,15 +126,16 @@ http {{
     )
 
 
-def fetch_response(port: int) -> tuple[bytes, bytes, str]:
+def fetch_response(port: int) -> tuple[bytes, str, str]:
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/test.js",
         headers={"Accept-Encoding": "zstd", "User-Agent": "zstd-ci-smoke-test/1.0"},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         compressed = response.read()
-        header = response.headers.get("Content-Encoding", "")
-    return compressed, header.encode("utf-8"), header
+        content_encoding = response.headers.get("Content-Encoding", "")
+        vary = response.headers.get("Vary", "")
+    return compressed, content_encoding, vary
 
 
 def decompress_payload(zstd_bin: str, compressed: bytes) -> bytes:
@@ -161,7 +177,7 @@ def main() -> int:
         fixture_path = html_dir / "test.js"
         expected = build_fixture(fixture_path, args.fixture_lines)
         conf_path = conf_dir / "nginx.conf"
-        write_config(conf_path, html_dir, args.port)
+        write_config(conf_path, html_dir, args.port, args.gzip_vary)
 
         process = subprocess.Popen(
             [
@@ -180,9 +196,13 @@ def main() -> int:
 
         try:
             wait_for_port(args.port)
-            compressed, _, encoding = fetch_response(args.port)
+            compressed, encoding, vary = fetch_response(args.port)
             if encoding.lower() != "zstd":
                 raise RuntimeError(f"expected Content-Encoding=zstd, got {encoding!r}")
+            if args.expect_vary:
+                vary_values = {value.strip().lower() for value in vary.split(",") if value.strip()}
+                if "accept-encoding" not in vary_values:
+                    raise RuntimeError(f"expected Vary to include Accept-Encoding, got {vary!r}")
             decoded = decompress_payload(args.zstd_bin, compressed)
             if decoded != expected:
                 raise RuntimeError(
@@ -192,7 +212,9 @@ def main() -> int:
             if FIXTURE_SENTINEL.encode("utf-8") not in decoded:
                 raise RuntimeError("fixture sentinel missing from decoded response")
             print(
-                f"OK: verified zstd response integrity for {len(expected)}-byte JavaScript fixture"
+                "OK: verified zstd response integrity"
+                f" for {len(expected)}-byte JavaScript fixture"
+                + (" with Vary: Accept-Encoding" if args.expect_vary else "")
             )
             return 0
         finally:

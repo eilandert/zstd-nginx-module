@@ -8,7 +8,7 @@ $ENV{'TEST_NGINX_PERL_PATH'}="$ENV{'PWD'}/$dirname";
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 129;
+plan tests => repeat_each() * (blocks() * 3) + 132;
 run_tests();
 
 
@@ -540,3 +540,81 @@ Content-Encoding: zstd
 Content-type: text/plain
 --- no_error_log
 [error]
+
+
+
+=== TEST 24: zstd filter preserves HEAD pass-through behaviour
+--- config
+    location /filter {
+        zstd on;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+    }
+    location /test {
+        root $TEST_NGINX_PERL_PATH/suite/;
+    }
+--- request
+HEAD /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: zstd
+!Content-Length
+--- no_error_log
+[error]
+
+
+=== TEST 25: zstd filter skips 204 responses
+--- config
+    location /filter {
+        zstd on;
+        zstd_types text/plain;
+        return 204;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 204
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 26: zstd filter skips 205 responses
+--- config
+    location /filter {
+        zstd on;
+        zstd_types text/plain;
+        return 205;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 205
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+=== TEST 27: zstd filter skips 304 responses
+--- config
+    location /filter {
+        zstd on;
+        zstd_types text/plain;
+        return 304;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 304
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+

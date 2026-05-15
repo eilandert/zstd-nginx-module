@@ -352,13 +352,23 @@ jobs:
             --port 18080
           echo "✓ Truncation smoke test passed"
 
+      - name: Run Vary smoke test
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 tools/test_encoding.py \
+            --nginx-binary "$TEST_NGINX_BINARY" \
+            --port 18081 \
+            --gzip-vary on \
+            --expect-vary
+          echo "✓ Vary smoke test passed"
+
       - name: Test summary
         if: success()
         run: |
-          echo "✓ All 41 Perl tests passed successfully"
-          echo "  ✓ 23 filter module tests"
+          echo "✓ All Perl tests passed successfully"
+          echo "  ✓ 27 filter module tests"
           echo "  ✓ 18 static module tests"
-          echo "  ✓ 1 JavaScript truncation smoke test"
+          echo "  ✓ 2 end-to-end smoke tests"
 
       - name: Upload test logs on failure
         if: failure()
