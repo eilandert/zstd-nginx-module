@@ -8,7 +8,7 @@ $ENV{'TEST_NGINX_PERL_PATH'}="$ENV{'PWD'}/$dirname";
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 132;
+plan tests => repeat_each() * (blocks() * 3) + 150;
 run_tests();
 
 
@@ -618,3 +618,50 @@ Accept-Encoding: zstd
 --- no_error_log
 [error]
 
+
+
+
+=== TEST 28: zstd filter compresses 403 responses above min_length
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        default_type text/plain;
+        return 403 "forbidden body\n";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 403
+--- response_headers
+!Content-Length
+Transfer-Encoding: chunked
+Content-Encoding: zstd
+Content-Type: text/plain
+--- no_error_log
+[error]
+
+
+=== TEST 29: zstd filter compresses 404 responses above min_length
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        default_type text/plain;
+        return 404 "not found body\n";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 404
+--- response_headers
+!Content-Length
+Transfer-Encoding: chunked
+Content-Encoding: zstd
+Content-Type: text/plain
+--- no_error_log
+[error]
