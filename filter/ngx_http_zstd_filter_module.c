@@ -61,6 +61,7 @@ typedef struct {
     ZSTD_outBuffer               buffer_out;
 
     ngx_http_request_t          *request;
+    ZSTD_CCtx                   *cctx;
 
     size_t                       bytes_in;
     size_t                       bytes_out;
@@ -75,19 +76,6 @@ typedef struct {
     /* PR #49: Action state machine (COMPRESS, FLUSH, or END) */
     ngx_http_zstd_action_t       action;
 } ngx_http_zstd_ctx_t;
-
-
-/*
- * Per-worker reusable compression context.  Allocated once at worker startup
- * with the system allocator so it can be reused across requests without being
- * tied to any request pool.  Reset between requests via
- * ZSTD_CCtx_reset(ZSTD_reset_session_only).
- */
-typedef struct {
-    ZSTD_CCtx   *cctx;
-} ngx_http_zstd_worker_t;
-
-static ngx_http_zstd_worker_t  ngx_http_zstd_worker;
 
 
 typedef struct {
@@ -113,8 +101,6 @@ static ngx_int_t ngx_http_zstd_filter_init_cctx(ngx_http_request_t *r,
 static ngx_int_t ngx_http_zstd_filter_compress(ngx_http_request_t *r,
     ngx_http_zstd_ctx_t *ctx);
 static ngx_int_t ngx_http_zstd_filter_init(ngx_conf_t *cf);
-static ngx_int_t ngx_http_zstd_init_process(ngx_cycle_t *cycle);
-static void ngx_http_zstd_exit_process(ngx_cycle_t *cycle);
 static void * ngx_http_zstd_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_zstd_init_main_conf(ngx_conf_t *cf, void *conf);
 static void *ngx_http_zstd_create_loc_conf(ngx_conf_t *cf);
@@ -127,6 +113,7 @@ static char *ngx_http_zstd_comp_level(ngx_conf_t *cf, void *post, void *data);
 static char *ngx_conf_zstd_set_num_slot_with_negatives(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static void ngx_http_zstd_cleanup_dict(void *data);
+static void ngx_http_zstd_cleanup_cctx(void *data);
 
 
 static ngx_http_zstd_comp_level_bounds_t  ngx_http_zstd_comp_level_bounds = {
@@ -219,10 +206,10 @@ ngx_module_t  ngx_http_zstd_filter_module = {
     NGX_HTTP_MODULE,                        /* module type */
     NULL,                                   /* init master */
     NULL,                                   /* init module */
-    ngx_http_zstd_init_process,             /* init process */
+    NULL,                                 /* init process */
     NULL,                                   /* init thread */
     NULL,                                   /* exit thread */
-    ngx_http_zstd_exit_process,             /* exit process */
+    NULL,                                 /* exit process */
     NULL,                                   /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -296,7 +283,6 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
-    size_t                rv;
     ngx_int_t             flush, rc;
     ngx_chain_t          *cl;
     ngx_http_zstd_ctx_t  *ctx;
@@ -310,13 +296,6 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http zstd filter");
-
-    if (ngx_http_zstd_worker.cctx == NULL) {
-        ctx->done = 1;
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "zstd: worker CCtx not initialized");
-        return NGX_ERROR;
-    }
 
     if (!ctx->last && ctx->buffer_in.src == NULL) {
         /* First call: configure the reused CCtx for this request. */
@@ -416,19 +395,6 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         flush = 0;
 
         if (ctx->done) {
-            /*
-             * Reset only the session so parameters (level, dict) are
-             * preserved for the next request reusing this worker CCtx.
-             */
-            rv = ZSTD_CCtx_reset(ngx_http_zstd_worker.cctx,
-                                 ZSTD_reset_session_only);
-            if (ZSTD_isError(rv)) {
-                ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                              "zstd: ZSTD_CCtx_reset() after done failed: %s",
-                              ZSTD_getErrorName(rv));
-                rc = NGX_ERROR;
-            }
-
             return rc;
         }
     }
@@ -436,14 +402,6 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 failed:
 
     ctx->done = 1;
-
-    /* Reset session so the worker CCtx is clean for the next request. */
-    rv = ZSTD_CCtx_reset(ngx_http_zstd_worker.cctx, ZSTD_reset_session_only);
-    if (ZSTD_isError(rv)) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "zstd: ZSTD_CCtx_reset() on failure path failed: %s",
-                      ZSTD_getErrorName(rv));
-    }
 
     return NGX_ERROR;
 }
@@ -456,6 +414,7 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
     ZSTD_EndDirective directive;
     ngx_chain_t      *cl;
     ngx_buf_t        *b;
+    ZSTD_CCtx        *cctx;
 
     ngx_log_debug6(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "zstd compress in: src:%p pos:%uz size:%uz "
@@ -477,8 +436,14 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         directive = ZSTD_e_continue;
     }
 
-    rc = ZSTD_compressStream2(ngx_http_zstd_worker.cctx,
-                              &ctx->buffer_out, &ctx->buffer_in, directive);
+    cctx = ctx->cctx;
+    if (cctx == NULL) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "zstd: request CCtx not initialized");
+        return NGX_ERROR;
+    }
+
+    rc = ZSTD_compressStream2(cctx, &ctx->buffer_out, &ctx->buffer_in, directive);
 
     if (ZSTD_isError(rc)) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
@@ -680,10 +645,10 @@ ngx_http_zstd_filter_get_buf(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 
 
 /*
- * Configure the worker-global CCtx for the current request.
- * Called once per request on first body data.  Uses the current location's
- * compression level and optional dictionary, then resets the session state so
- * any previous request's state is discarded.
+ * Configure a per-request CCtx on first body data.
+ * The CCtx is allocated outside the request pool but attached to the request
+ * cleanup chain, so overlapping requests in one worker never share libzstd
+ * streaming state.
  */
 static ngx_int_t
 ngx_http_zstd_filter_init_cctx(ngx_http_request_t *r,
@@ -693,10 +658,30 @@ ngx_http_zstd_filter_init_cctx(ngx_http_request_t *r,
     ZSTD_CCtx                  *cctx;
     ngx_http_zstd_loc_conf_t   *zlcf;
 
-    (void)ctx;
-
-    cctx = ngx_http_zstd_worker.cctx;
     zlcf = ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
+
+    if (ctx->cctx == NULL) {
+        ngx_pool_cleanup_t  *cln;
+
+        ctx->cctx = ZSTD_createCCtx();
+        if (ctx->cctx == NULL) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "zstd: ZSTD_createCCtx() failed");
+            return NGX_ERROR;
+        }
+
+        cln = ngx_pool_cleanup_add(r->pool, 0);
+        if (cln == NULL) {
+            ZSTD_freeCCtx(ctx->cctx);
+            ctx->cctx = NULL;
+            return NGX_ERROR;
+        }
+
+        cln->handler = ngx_http_zstd_cleanup_cctx;
+        cln->data = ctx->cctx;
+    }
+
+    cctx = ctx->cctx;
 
     /* Full reset: session state + all parameters. */
     rc = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters);
@@ -741,32 +726,6 @@ ngx_http_zstd_filter_init_cctx(ngx_http_request_t *r,
     }
 
     return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_zstd_init_process(ngx_cycle_t *cycle)
-{
-    ngx_http_zstd_worker.cctx = ZSTD_createCCtx();
-    if (ngx_http_zstd_worker.cctx == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "zstd: ZSTD_createCCtx() failed");
-        return NGX_ERROR;
-    }
-
-    return NGX_OK;
-}
-
-
-static void
-ngx_http_zstd_exit_process(ngx_cycle_t *cycle)
-{
-    (void)cycle;
-
-    if (ngx_http_zstd_worker.cctx != NULL) {
-        ZSTD_freeCCtx(ngx_http_zstd_worker.cctx);
-        ngx_http_zstd_worker.cctx = NULL;
-    }
 }
 
 
@@ -1066,6 +1025,17 @@ ngx_http_zstd_ratio_variable(ngx_http_request_t *r,
     vv->no_cacheable = 1;
 
     return NGX_OK;
+}
+
+
+static void
+ngx_http_zstd_cleanup_cctx(void *data)
+{
+    ZSTD_CCtx *cctx = data;
+
+    if (cctx != NULL) {
+        ZSTD_freeCCtx(cctx);
+    }
 }
 
 

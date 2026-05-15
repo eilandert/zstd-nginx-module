@@ -45,7 +45,7 @@ Runs the Perl test suite plus focused truncation and stability smoke tests:
 - ✓ 403/404 compressed error-response behaviour
 - ✓ Vary: Accept-Encoding emission when gzip_vary is enabled
 - ✓ Boundary-sized large-response integrity near the historical truncation threshold
-- ✓ Worker-global CCtx reuse across sequential requests
+- ✓ Per-request CCtx handling across sequential requests
 - ✓ Two concurrent requests against the same nginx worker
 - ✓ Large JavaScript response integrity after zstd decompression
 
