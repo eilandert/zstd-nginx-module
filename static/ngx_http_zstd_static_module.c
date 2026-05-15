@@ -297,7 +297,7 @@ ngx_http_zstd_static_create_loc_conf(ngx_conf_t *cf)
 {
     ngx_http_zstd_static_conf_t  *conf;
 
-    conf = ngx_palloc(cf->pool, sizeof(ngx_http_zstd_static_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_zstd_static_conf_t));
     if (conf == NULL) {
         return NULL;
     }

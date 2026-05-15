@@ -71,7 +71,6 @@ typedef struct {
     unsigned                     flush:1;
     unsigned                     done:1;
     unsigned                     nomem:1;
-    unsigned                     ending:1;   /* endStream in progress */
 
     /* PR #49: Action state machine (COMPRESS, FLUSH, or END) */
     ngx_http_zstd_action_t       action;
@@ -411,6 +410,7 @@ static ngx_int_t
 ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 {
     size_t            rc, pos_in, pos_out;
+    ngx_uint_t        last;
     ZSTD_EndDirective directive;
     ngx_chain_t      *cl;
     ngx_buf_t        *b;
@@ -484,11 +484,20 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
          * - last flag is set (we know this is the final chunk)
          * - input buffer fully drained (no more bytes to feed libzstd)
          * - no more chain links queued (all input streams exhausted)
-         * This prevents premature END transitions that cause 131072-byte truncation.
+         * This prevents premature END transitions that cause 131072-byte
+         * truncation.
          */
         ctx->action = NGX_HTTP_ZSTD_FILTER_END;
         ctx->redo   = 1;
 
+        /*
+         * We have only just switched to END; the call above ran with
+         * ZSTD_e_continue/flush and has NOT yet written the zstd end-of-frame
+         * marker. If it produced no output, force another iteration so
+         * ZSTD_e_end runs. If it did produce output, fall through to emit
+         * those (valid, non-terminal) bytes — but `last` must stay false this
+         * iteration so we do not set last_buf before the end marker exists.
+         */
         if (ngx_buf_size(ctx->out_buf) == 0) {
             return NGX_AGAIN;
         }
@@ -498,7 +507,24 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         ctx->action = NGX_HTTP_ZSTD_FILTER_COMPRESS;
     }
 
-    if (ngx_buf_size(ctx->out_buf) == 0) {
+    /*
+     * Terminal frame: the call that just ran used ZSTD_e_end (so `directive`
+     * — captured before any action transition above — is ZSTD_e_end) and
+     * libzstd reports the frame is fully flushed (rc == 0). Keyed on
+     * `directive`, not `ctx->action`, because the COMPRESS→END transition
+     * above mutates ctx->action *after* the compress call; using ctx->action
+     * here would declare the stream terminal one iteration too early and
+     * truncate it (no end-of-frame marker written yet).
+     *
+     * Evaluated before the empty-buffer early return below: a terminal
+     * ZSTD_e_end that produces zero output bytes (everything drained on a
+     * prior iteration) must still emit a zero-length last_buf, otherwise the
+     * request loops forever with NGX_HTTP_GZIP_BUFFERED set and hangs until
+     * timeout.
+     */
+    last = rc == 0 && ctx->last && directive == ZSTD_e_end;
+
+    if (ngx_buf_size(ctx->out_buf) == 0 && !last && !(rc == 0 && ctx->flush)) {
         return NGX_AGAIN;
     }
 
@@ -509,21 +535,11 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 
     b = ctx->out_buf;
 
-    /* PR #23: Allocate fresh buffer if output buffer is empty when transitioning
-     * state (e.g., during FLUSH→COMPRESS restore). This prevents infinite loops
-     * on empty buffers. */
-    if (ngx_buf_size(b) == 0) {
-        b = ngx_calloc_buf(r->pool);
-        if (b == NULL) {
-            return NGX_ERROR;
-        }
-    }
-
-    if (rc == 0 && (ctx->flush || (ctx->last && ctx->action == NGX_HTTP_ZSTD_FILTER_END))) {
+    if (rc == 0 && (ctx->flush || last)) {
         r->connection->buffered &= ~NGX_HTTP_GZIP_BUFFERED;
 
         b->flush = ctx->flush && !ctx->last;
-        b->last_buf = ctx->last && ctx->action == NGX_HTTP_ZSTD_FILTER_END && rc == 0;
+        b->last_buf = last;
 
         ctx->done  = b->last_buf;
         ctx->flush = 0;
@@ -539,7 +555,7 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 
     ngx_memzero(&ctx->buffer_out, sizeof(ZSTD_outBuffer));
 
-    return (ctx->last && ctx->action == NGX_HTTP_ZSTD_FILTER_END && rc == 0) ? NGX_OK : NGX_AGAIN;
+    return last ? NGX_OK : NGX_AGAIN;
 }
 
 
@@ -997,9 +1013,9 @@ ngx_http_zstd_ratio_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *vv, uintptr_t data)
 {
     ngx_uint_t            ratio_int, ratio_frac;
-
-    (void)data;
     ngx_http_zstd_ctx_t  *ctx;
+
+    (void) data;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_zstd_filter_module);
     if (ctx == NULL || !ctx->done || ctx->bytes_out == 0) {

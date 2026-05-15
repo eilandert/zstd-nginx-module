@@ -29,6 +29,12 @@ ngx_http_zstd_accept_encoding(ngx_str_t *ae)
 {
     u_char  *p;
 
+    /*
+     * ngx_strcasestrn()'s last argument is the needle length minus one
+     * (it does length+1 internally). "zstd" is 4 chars, so:
+     *   sizeof("zstd") - 2 == 5 - 2 == 3 == strlen("zstd") - 1.
+     * Do not "fix" this to -1; that would over-read the needle.
+     */
     p = ngx_strcasestrn(ae->data, (char *) "zstd", sizeof("zstd") - 2);
     if (p == NULL) {
         return NGX_DECLINED;

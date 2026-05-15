@@ -1,13 +1,13 @@
 #!/bin/bash
 # Build and test zstd-nginx-module against nginx
 # Usage: ./tools/ci-build.sh [nginx-version]
-# Default: 1.29.8 (latest)
+# Default: 1.31.0 (latest)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$(dirname "$SCRIPT_DIR")"
-NGINX_VERSION="${1:-1.29.8}"
+NGINX_VERSION="${1:-1.31.0}"
 BUILD_DIR="/tmp/nginx-build-$$"
 ZSTD_MODULE_DIR="$MODULE_DIR"
 
