@@ -362,13 +362,40 @@ jobs:
             --expect-vary
           echo "✓ Vary smoke test passed"
 
+      - name: Run boundary-size smoke test
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 tools/test_encoding.py \
+            --nginx-binary "$TEST_NGINX_BINARY" \
+            --port 18082 \
+            --fixture-lines 1900
+          echo "✓ Boundary-size smoke test passed"
+
+      - name: Run repeated-request smoke test
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 tools/test_encoding.py \
+            --nginx-binary "$TEST_NGINX_BINARY" \
+            --port 18083 \
+            --request-count 2
+          echo "✓ Repeated-request smoke test passed"
+
+      - name: Run concurrent-request smoke test
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 tools/test_encoding.py \\
+            --nginx-binary "$TEST_NGINX_BINARY" \\
+            --port 18084 \\
+            --concurrent-requests 2
+          echo "✓ Concurrent-request smoke test passed"
+
       - name: Test summary
         if: success()
         run: |
           echo "✓ All Perl tests passed successfully"
           echo "  ✓ 29 filter module tests"
           echo "  ✓ 18 static module tests"
-          echo "  ✓ 2 end-to-end smoke tests"
+          echo "  ✓ 5 end-to-end smoke tests"
 
       - name: Upload test logs on failure
         if: failure()

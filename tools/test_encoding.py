@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import concurrent.futures
 import pathlib
 import shutil
 import socket
@@ -51,6 +52,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8192,
         help="Number of repeated lines to generate in the JavaScript fixture.",
+    )
+    parser.add_argument(
+        "--request-count",
+        type=int,
+        default=1,
+        help="How many sequential requests to verify against the same nginx worker.",
+    )
+    parser.add_argument(
+        "--concurrent-requests",
+        type=int,
+        default=1,
+        help="How many concurrent requests to verify against the same nginx worker.",
     )
     return parser.parse_args()
 
@@ -157,6 +170,30 @@ def read_if_exists(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def validate_response(
+    port: int,
+    zstd_bin: str,
+    expected: bytes,
+    expect_vary: bool,
+    request_label: str,
+) -> None:
+    compressed, encoding, vary = fetch_response(port)
+    if encoding.lower() != "zstd":
+        raise RuntimeError(f"expected Content-Encoding=zstd, got {encoding!r}")
+    if expect_vary:
+        vary_values = {value.strip().lower() for value in vary.split(",") if value.strip()}
+        if "accept-encoding" not in vary_values:
+            raise RuntimeError(f"expected Vary to include Accept-Encoding, got {vary!r}")
+    decoded = decompress_payload(zstd_bin, compressed)
+    if decoded != expected:
+        raise RuntimeError(
+            "decompressed response does not match source fixture; "
+            f"{request_label}, expected {len(expected)} bytes, got {len(decoded)} bytes"
+        )
+    if FIXTURE_SENTINEL.encode("utf-8") not in decoded:
+        raise RuntimeError("fixture sentinel missing from decoded response")
+
+
 def main() -> int:
     args = parse_args()
     nginx_binary = pathlib.Path(args.nginx_binary)
@@ -164,6 +201,12 @@ def main() -> int:
         raise FileNotFoundError(f"nginx binary not found: {nginx_binary}")
     if shutil.which(args.zstd_bin) is None and not pathlib.Path(args.zstd_bin).exists():
         raise FileNotFoundError(f"zstd CLI not found: {args.zstd_bin}")
+    if args.request_count < 1:
+        raise ValueError(f"request-count must be >= 1, got {args.request_count}")
+    if args.concurrent_requests < 1:
+        raise ValueError(
+            f"concurrent-requests must be >= 1, got {args.concurrent_requests}"
+        )
 
     with tempfile.TemporaryDirectory(prefix="zstd-ci-smoke-") as temp_dir_str:
         temp_dir = pathlib.Path(temp_dir_str)
@@ -196,24 +239,36 @@ def main() -> int:
 
         try:
             wait_for_port(args.port)
-            compressed, encoding, vary = fetch_response(args.port)
-            if encoding.lower() != "zstd":
-                raise RuntimeError(f"expected Content-Encoding=zstd, got {encoding!r}")
-            if args.expect_vary:
-                vary_values = {value.strip().lower() for value in vary.split(",") if value.strip()}
-                if "accept-encoding" not in vary_values:
-                    raise RuntimeError(f"expected Vary to include Accept-Encoding, got {vary!r}")
-            decoded = decompress_payload(args.zstd_bin, compressed)
-            if decoded != expected:
-                raise RuntimeError(
-                    "decompressed response does not match source fixture; "
-                    f"expected {len(expected)} bytes, got {len(decoded)} bytes"
+            for request_index in range(args.request_count):
+                validate_response(
+                    args.port,
+                    args.zstd_bin,
+                    expected,
+                    args.expect_vary,
+                    f"request {request_index + 1}/{args.request_count}",
                 )
-            if FIXTURE_SENTINEL.encode("utf-8") not in decoded:
-                raise RuntimeError("fixture sentinel missing from decoded response")
+
+            if args.concurrent_requests > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrent_requests) as executor:
+                    futures = [
+                        executor.submit(
+                            validate_response,
+                            args.port,
+                            args.zstd_bin,
+                            expected,
+                            args.expect_vary,
+                            f"concurrent request {request_index + 1}/{args.concurrent_requests}",
+                        )
+                        for request_index in range(args.concurrent_requests)
+                    ]
+                    for future in futures:
+                        future.result()
+
             print(
                 "OK: verified zstd response integrity"
                 f" for {len(expected)}-byte JavaScript fixture"
+                + (f" across {args.request_count} sequential requests" if args.request_count > 1 else "")
+                + (f" and {args.concurrent_requests} concurrent requests" if args.concurrent_requests > 1 else "")
                 + (" with Vary: Accept-Encoding" if args.expect_vary else "")
             )
             return 0
