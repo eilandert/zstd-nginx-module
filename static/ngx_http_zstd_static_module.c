@@ -8,6 +8,8 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#include "../ngx_http_zstd_common.h"
+
 
 #define NGX_HTTP_ZSTD_STATIC_OFF        0
 #define NGX_HTTP_ZSTD_STATIC_ON         1
@@ -19,23 +21,10 @@ typedef struct {
 } ngx_http_zstd_static_conf_t;
 
 
-static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
-
-static ngx_int_t ngx_http_zstd_ok(ngx_http_request_t *r);
-static ngx_int_t ngx_http_zstd_accept_encoding(ngx_str_t *ae);
-static ngx_uint_t ngx_http_zstd_quantity(u_char *p, u_char *last);
-
-static void *ngx_http_zstd_static_create_conf(ngx_conf_t *cf);
-static char *ngx_http_zstd_static_merge_conf(ngx_conf_t *cf, void *parent,
-    void *child);
-static ngx_int_t ngx_http_zstd_static_init(ngx_conf_t *cf);
-
-
 static ngx_conf_enum_t  ngx_http_zstd_static[] = {
     { ngx_string("off"), NGX_HTTP_ZSTD_STATIC_OFF },
     { ngx_string("on"), NGX_HTTP_ZSTD_STATIC_ON },
     { ngx_string("always"), NGX_HTTP_ZSTD_STATIC_ALWAYS },
-    { ngx_null_string, 0 }
 };
 
 
@@ -48,37 +37,44 @@ static ngx_command_t  ngx_http_zstd_static_commands[] = {
       offsetof(ngx_http_zstd_static_conf_t, enable),
       &ngx_http_zstd_static },
 
-      ngx_null_command
+    ngx_null_command
 };
 
 
+static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
+static void * ngx_http_zstd_static_create_loc_conf(ngx_conf_t *cf);
+static char * ngx_http_zstd_static_merge_loc_conf(ngx_conf_t *cf, void *parent,
+    void *child);
+static ngx_int_t ngx_http_zstd_static_init(ngx_conf_t *cf);
+
+
 static ngx_http_module_t  ngx_http_zstd_static_module_ctx = {
-    NULL,                                  /* preconfiguration */
-    ngx_http_zstd_static_init,             /* postconfiguration */
+    NULL,                                     /* preconfiguration */
+    ngx_http_zstd_static_init,                /* postconfiguration */
 
-    NULL,                                  /* create main configuration */
-    NULL,                                  /* init main configuration */
+    NULL,                                     /* create main configuration */
+    NULL,                                     /* init main configuration */
 
-    NULL,                                  /* create server configuration */
-    NULL,                                  /* merge server configuration */
+    NULL,                                     /* create server configuration */
+    NULL,                                     /* merge server configuration */
 
-    ngx_http_zstd_static_create_conf,      /* create location configuration */
-    ngx_http_zstd_static_merge_conf        /* merge location configuration */
+    ngx_http_zstd_static_create_loc_conf,  /* create location configuration */
+    ngx_http_zstd_static_merge_loc_conf,      /* merge location configuration */
 };
 
 
 ngx_module_t  ngx_http_zstd_static_module = {
     NGX_MODULE_V1,
-    &ngx_http_zstd_static_module_ctx,      /* module context */
-    ngx_http_zstd_static_commands,         /* module directives */
-    NGX_HTTP_MODULE,                       /* module type */
-    NULL,                                  /* init master */
-    NULL,                                  /* init module */
-    NULL,                                  /* init process */
-    NULL,                                  /* init thread */
-    NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
-    NULL,                                  /* exit master */
+    &ngx_http_zstd_static_module_ctx,       /* module context */
+    ngx_http_zstd_static_commands,          /* module directives */
+    NGX_HTTP_MODULE,                        /* module type */
+    NULL,                                   /* init master */
+    NULL,                                   /* init module */
+    NULL,                                   /* init process */
+    NULL,                                   /* init thread */
+    NULL,                                   /* exit thread */
+    NULL,                                   /* exit process */
+    NULL,                                   /* exit master */
     NGX_MODULE_V1_PADDING
 };
 
@@ -87,14 +83,14 @@ static ngx_int_t
 ngx_http_zstd_static_handler(ngx_http_request_t *r)
 {
     u_char                       *p;
-    size_t                        root;
-    ngx_str_t                     path;
     ngx_int_t                     rc;
     ngx_uint_t                    level;
-    ngx_log_t                    *log;
+    size_t                        root;
+    ngx_str_t                     path;
     ngx_buf_t                    *b;
-    ngx_chain_t                   out;
+    ngx_log_t                    *log;
     ngx_table_elt_t              *h;
+    ngx_chain_t                   out;
     ngx_open_file_info_t          of;
     ngx_http_core_loc_conf_t     *clcf;
     ngx_http_zstd_static_conf_t  *zscf;
@@ -103,7 +99,9 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    if (r->uri.data[r->uri.len - 1] == '/') {
+    /* Validate URI length before accessing last byte to prevent underflow.
+     * While nginx guarantees non-empty URI, add defensive check for safety. */
+    if (r->uri.len == 0 || r->uri.data[r->uri.len - 1] == '/') {
         return NGX_DECLINED;
     }
 
@@ -117,7 +115,6 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
         rc = ngx_http_zstd_ok(r);
 
     } else {
-        /* always */
         rc = NGX_OK;
     }
 
@@ -137,7 +134,6 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     *p++ = '.';
     *p++ = 'z';
     *p++ = 's';
-    *p++ = 't';
     *p++ = 't';
     *p = '\0';
 
@@ -223,12 +219,11 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     r->root_tested = !r->error_page;
 
     rc = ngx_http_discard_request_body(r);
-
     if (rc != NGX_OK) {
         return rc;
     }
 
-    log->action = "sending response to client";
+    log->action = (char *) "sending response to client";
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = of.size;
@@ -252,14 +247,15 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     }
 
     h->hash = 1;
-    h->next = NULL;
     ngx_str_set(&h->key, "Content-Encoding");
     ngx_str_set(&h->value, "zstd");
     r->headers_out.content_encoding = h;
 
-    r->allow_ranges = 1;
-
-    /* we need to allocate all before the header would be sent */
+    /* Byte ranges are meaningless on a compressed body: offsets in the
+     * .zst file do not correspond to positions in the original content.
+     * RFC 9110 §14.2 — clear Accept-Ranges so clients do not request
+     * ranges that would yield undecipherable fragments. */
+    ngx_http_clear_accept_ranges(r);
 
     b = ngx_calloc_buf(r->pool);
     if (b == NULL) {
@@ -283,7 +279,6 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     b->in_file = b->file_last ? 1 : 0;
     b->last_buf = (r == r->main) ? 1 : 0;
     b->last_in_chain = 1;
-    b->sync = (b->last_buf || b->in_file) ? 0 : 1;
 
     b->file->fd = of.fd;
     b->file->name = path;
@@ -297,173 +292,12 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
 }
 
 
-static ngx_int_t
-ngx_http_zstd_ok(ngx_http_request_t *r)
-{
-    ngx_table_elt_t  *ae;
-
-    if (r != r->main) {
-        return NGX_DECLINED;
-    }
-
-    ae = r->headers_in.accept_encoding;
-    if (ae == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (ae->value.len < sizeof("zstd") - 1) {
-        return NGX_DECLINED;
-    }
-
-    if (ngx_memcmp(ae->value.data, "zstd", 4) != 0
-        && ngx_http_zstd_accept_encoding(&ae->value) != NGX_OK)
-    {
-        return NGX_DECLINED;
-    }
-
-    r->gzip_tested = 1;
-    r->gzip_ok = 0;
-
-    return NGX_OK;
-}
-
-
-/*
- * a copy of ngx_http_gzip_accept_encoding, for zstd content encoding
- */
-
-static ngx_int_t
-ngx_http_zstd_accept_encoding(ngx_str_t *ae)
-{
-    u_char  *p, *start, *last;
-
-    start = ae->data;
-    last = start + ae->len;
-
-    for ( ;; ) {
-        p = ngx_strcasestrn(start, "zstd", 4 - 1);
-        if (p == NULL) {
-            return NGX_DECLINED;
-        }
-
-        if (p == start || (*(p - 1) == ',' || *(p - 1) == ' ')) {
-            break;
-        }
-
-        start = p + 4;
-    }
-
-    p += 4;
-
-    while (p < last) {
-        switch (*p++) {
-        case ',':
-            return NGX_OK;
-        case ';':
-            goto quantity;
-        case ' ':
-            continue;
-        default:
-            return NGX_DECLINED;
-        }
-    }
-
-    return NGX_OK;
-
-quantity:
-
-    while (p < last) {
-        switch (*p++) {
-        case 'q':
-        case 'Q':
-            goto equal;
-        case ' ':
-            continue;
-        default:
-            return NGX_DECLINED;
-        }
-    }
-
-    return NGX_OK;
-
-equal:
-
-    if (p + 2 > last || *p++ != '=') {
-        return NGX_DECLINED;
-    }
-
-    if (ngx_http_zstd_quantity(p, last) == 0) {
-        return NGX_DECLINED;
-    }
-
-    return NGX_OK;
-}
-
-
-/*
- * a copy of ngx_http_gzip_quantity
- */
-
-static ngx_uint_t
-ngx_http_zstd_quantity(u_char *p, u_char *last)
-{
-    u_char      c;
-    ngx_uint_t  n, q;
-
-    c = *p++;
-
-    if (c != '0' && c != '1') {
-        return 0;
-    }
-
-    q = (c - '0') * 100;
-
-    if (p == last) {
-        return q;
-    }
-
-    c = *p++;
-
-    if (c == ',' || c == ' ') {
-        return q;
-    }
-
-    if (c != '.') {
-        return 0;
-    }
-
-    n = 0;
-
-    while (p < last) {
-        c = *p++;
-
-        if (c == ',' || c == ' ') {
-            break;
-        }
-
-        if (c >= '0' && c <= '9') {
-            q += c - '0';
-            n++;
-            continue;
-        }
-
-        return 0;
-    }
-
-    if (q > 100 || n > 3) {
-        return 0;
-    }
-
-    return q;
-}
-
-
 static void *
-ngx_http_zstd_static_create_conf(ngx_conf_t *cf)
+ngx_http_zstd_static_create_loc_conf(ngx_conf_t *cf)
 {
     ngx_http_zstd_static_conf_t  *conf;
 
-    conf = ngx_palloc(cf->pool, sizeof(ngx_http_zstd_static_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_zstd_static_conf_t));
     if (conf == NULL) {
         return NULL;
     }
@@ -475,7 +309,7 @@ ngx_http_zstd_static_create_conf(ngx_conf_t *cf)
 
 
 static char *
-ngx_http_zstd_static_merge_conf(ngx_conf_t *cf, void *parent, void *child)
+ngx_http_zstd_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
     ngx_http_zstd_static_conf_t *prev = parent;
     ngx_http_zstd_static_conf_t *conf = child;
