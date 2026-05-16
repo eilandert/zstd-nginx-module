@@ -3,9 +3,13 @@
 [![Security Scanners](https://github.com/eilandert/zstd-nginx-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/eilandert/zstd-nginx-module/actions/workflows/security-scanners.yml)
 [![Fuzzing](https://github.com/eilandert/zstd-nginx-module/actions/workflows/fuzzing.yml/badge.svg)](https://github.com/eilandert/zstd-nginx-module/actions/workflows/fuzzing.yml)
 
+📖 **Background reading:** [nginx zstd vs brotli vs zlib-ng — a compression comparison](https://deb.myguard.nl/2026/05/nginx-zstd-vs-brotli-vs-zlib-ng-compression/)
+
 # zstd-nginx-module
 
 An nginx module for [Zstandard (zstd)](https://facebook.github.io/zstd/) compression. Zstandard typically achieves better compression ratios than gzip at comparable or faster speeds, making it a good choice for reducing transmitted response sizes.
+
+This is a hardened fork: every build is exercised against **nginx mainline and [Angie](https://angie.software/)**, the full test suite runs under **ASAN/UBSAN**, the `Accept-Encoding` parser is **continuously fuzzed**, and **CodeQL** plus flawfinder/semgrep/clang-tidy run on every change (see the badges above and [Testing & CI](#testing--ci)).
 
 # Table of Contents
 
@@ -26,12 +30,18 @@ An nginx module for [Zstandard (zstd)](https://facebook.github.io/zstd/) compres
     * [zstd_static](#zstd_static)
 * [Variables](#variables)
   * [$zstd_ratio](#zstd_ratio)
+* [Testing & CI](#testing--ci)
 * [Author](#author)
 * [License](#license)
 
 # Status
 
-This module is experimental. Bug reports and pull requests are welcome.
+Production-oriented. The module originates from the upstream
+[tokers/zstd-nginx-module](https://github.com/tokers/zstd-nginx-module) and
+has since had an extensive audit pass: a regression test for every known
+historical bug class, ASAN/UBSAN runtime checks, and continuous fuzzing of
+the request-parsing path (see [Testing & CI](#testing--ci)). Bug reports and
+pull requests are welcome.
 
 # Synopsis
 
@@ -328,9 +338,41 @@ log_format main '$remote_addr - $request - ratio: $zstd_ratio';
 
 ---
 
+# Testing & CI
+
+Every push and pull request runs four workflows (badges at the top):
+
+| Workflow | What it does |
+|---|---|
+| **Build & Test** | Compiles the module against **nginx 1.31.0 mainline** and **Angie 1.11.5** with strict `-Werror` flags, then runs the full test suite: 37 `Test::Nginx::Socket` filter tests, 20 static-module tests, and end-to-end Python smoke tests (truncation, `Vary`, boundary sizes, repeated/concurrent requests, terminal-frame, `$zstd_ratio`). A parallel job rebuilds with **ASAN+UBSAN** and re-runs the smoke tests plus a `zstd_dict_file` config-reload leak check. |
+| **CodeQL** | GitHub's `security-extended` C/C++ analysis against a real module build. |
+| **Security Scanners** | flawfinder, clang-tidy (`cert-*`, `bugprone-*`), and semgrep, with results uploaded as SARIF to the Security tab. |
+| **Fuzzing** | A libFuzzer harness for `ngx_http_zstd_accept_encoding()` — the RFC 7231 `Accept-Encoding`/q-value parser. The fuzz target is sliced from the shipped header at build time, so there is no copy drift. Runs nightly and on PRs that touch the parser. See [`fuzz/README.md`](fuzz/README.md). |
+
+The test suite includes a dedicated regression test for every known
+historical bug class (infinite-loop/CPU-spin DoS, `$zstd_ratio` integer
+overflow, filter ordering vs `sub_filter`, negative compression levels,
+`zstd_types` parsing, `max_length` enforcement, the `zstd_dict_file`
+feature, long-URI `.zst` path handling, and the `ZSTD_CDict` reload leak).
+
+Run the suites locally:
+
+```bash
+# Perl suites (needs Test::Nginx::Socket and a built nginx)
+TEST_NGINX_BINARY=/path/to/nginx prove t/00-filter.t t/01-static.t
+
+# End-to-end smoke tests
+python3 tools/test_encoding.py --nginx-binary /path/to/nginx
+
+# Build and run the fuzzer (needs clang)
+bash fuzz/build.sh && ./fuzz/fuzz_accept_encoding -max_total_time=60 fuzz/corpus/
+```
+
 # Author
 
 Alex Zhang (张超) \<zchao1995@gmail.com\>, UPYUN Inc.
+
+Hardening, test suite, fuzzing and CI by the [deb.myguard.nl](https://deb.myguard.nl/) maintainers.
 
 # License
 
