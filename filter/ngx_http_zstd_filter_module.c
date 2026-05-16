@@ -625,6 +625,12 @@ ngx_http_zstd_filter_get_buf(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         return NGX_DECLINED;
     }
 
+    if (ctx->out_buf == NULL) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "zstd: out_buf is NULL after buffer allocation");
+        return NGX_ERROR;
+    }
+
     ctx->buffer_out.dst = ctx->out_buf->pos;
     ctx->buffer_out.pos = 0;
     ctx->buffer_out.size = ctx->out_buf->end - ctx->out_buf->start;
