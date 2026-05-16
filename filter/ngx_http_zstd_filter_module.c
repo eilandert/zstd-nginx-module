@@ -1050,6 +1050,20 @@ close:
         rc = NGX_CONF_ERROR;
     }
 
+    if (rc == NGX_OK && conf->enable) {
+        ngx_http_core_loc_conf_t  *clcf;
+
+        clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+        if (clcf != NULL && !clcf->gzip_vary) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                               "zstd is enabled but \"gzip_vary\" is off; "
+                               "add \"gzip_vary on\" to emit "
+                               "\"Vary: Accept-Encoding\" so proxies and "
+                               "CDNs cache compressed and uncompressed "
+                               "responses separately");
+        }
+    }
+
     return rc;
 }
 
