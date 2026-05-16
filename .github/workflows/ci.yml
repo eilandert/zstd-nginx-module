@@ -384,7 +384,10 @@ jobs:
 
   # ── Full test suite — runs against the mainline binary ────────────────────
   tests:
-    name: Tests (nginx ${{ env.NGINX_VERSION }})
+    # The job-level name: is evaluated before the env context is available,
+    # so it cannot use ${{ env.NGINX_VERSION }} (GitHub rejects the whole
+    # workflow file). Keep this literal in sync with NGINX_VERSION above.
+    name: Tests (nginx 1.31.0 mainline)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: build
