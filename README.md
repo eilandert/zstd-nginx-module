@@ -160,6 +160,14 @@ Sets the zstd compression level. Accepted values depend on the installed zstd li
 
 For most web-serving workloads, levels `1`–`3` are recommended. Avoid high levels (> 9) in production unless responses are generated infrequently and cached.
 
+> **Performance note:** when a response has a known exact
+> `Content-Length` (the common proxied/static case), the module passes
+> that size to zstd up front (`ZSTD_CCtx_setPledgedSrcSize`). zstd then
+> sizes its internals to the input and writes a more compact frame
+> header, giving a small speed/ratio improvement at no cost. This is
+> automatic, per request, and requires no configuration. Chunked /
+> unknown-length responses are unaffected (they stream as before).
+
 ---
 
 ### zstd_min_length

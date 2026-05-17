@@ -25,7 +25,7 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 147;
+plan tests => repeat_each() * (blocks() * 3) + 150;
 run_tests();
 
 
@@ -1053,3 +1053,42 @@ Accept-Encoding: zstd
 --- ignore_response
 --- error_log
 input exceeded zstd_max_length (100) on a response with no Content-Length
+
+
+
+=== TEST 43: known Content-Length response round-trips (pledged-src-size)
+# Regression for the ZSTD_CCtx_setPledgedSrcSize optimisation. A
+# proxied response with an exact Content-Length takes the pledged-size
+# path in init_cctx; an off-by-anything pledge would make
+# ZSTD_compressStream2 error or corrupt the stream. Assert the response
+# is zstd-encoded, chunked (filter strips the length), and crucially
+# decompresses back to the exact original bytes.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/src;
+    }
+    location /src {
+        default_type text/plain;
+        return 200 "pledged-src-size round-trip body, long enough to compress and exercise the known-Content-Length path end to end\n";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Length
+Content-Encoding: zstd
+--- response_body_filters eval
+sub {
+    my $zstd = $_[0];
+    open(my $fh, "|-", "zstd -dq -c >/tmp/zstd_t43.out 2>/dev/null") or return "ERR";
+    print $fh $zstd; close($fh);
+    open(my $r, "<", "/tmp/zstd_t43.out") or return "ERR";
+    local $/; my $d = <$r>; close($r); unlink "/tmp/zstd_t43.out";
+    return $d;
+}
+--- response_body
+pledged-src-size round-trip body, long enough to compress and exercise the known-Content-Length path end to end
