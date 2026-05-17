@@ -241,6 +241,14 @@ Rules:
 - **One PR per issue/change.** Each branch contains exactly one
   logical change and its docs (README reference **and** TOC) — never
   bundle an unrelated fix because it was convenient.
+- **Push and open each PR immediately, before starting the next one.**
+  Don't batch the work and push at the end. The moment a PR's code is
+  committed and locally verified, push the branch and open the PR so
+  CI starts running on it while you build the next PR in the stack. CI
+  here takes several minutes (CodeQL, ASAN/UBSAN, multi-target builds);
+  pushing eagerly overlaps that wall-clock time with development
+  instead of serialising it. By the time the stack is fully written,
+  the lower PRs' CI is usually already green.
 - **Base each PR on the one below it**, not on `master`. The base
   branch of PR _n_ is the head branch of PR _n−1_. Set it explicitly:
   `gh pr create --base <lower-branch>`.
@@ -251,10 +259,21 @@ Rules:
 - **State the stack in every PR body.** List the full stack with links
   and mark this PR's position, e.g. `Stack: #12 ← #13 (this) ← #14`,
   and note "merge bottom-up".
-- **Merge strictly bottom-up.** Squash-merge the base PR first; GitHub
-  retargets the next PR onto `master` automatically. Re-check CI on
-  the newly retargeted PR before merging it. Never merge a higher PR
-  before its base — that pulls the lower change's diff in with it.
+- **Merge strictly bottom-up, and do NOT delete the base branch on
+  merge.** Squash-merge the base PR with the branch **kept**
+  (`--squash` without `--delete-branch`). Deleting the base branch
+  does **not** auto-retarget the next PR — GitHub *closes* it (a PR
+  whose base branch no longer exists cannot stay open and cannot be
+  reopened against the missing base; you must recreate it). Instead,
+  after the base merges: retarget the next PR to `master` explicitly
+  via the REST API (`gh api -X PATCH .../pulls/N -f base=master` —
+  `gh pr edit --base` can fail on the projects-classic GraphQL
+  deprecation), then rebase its branch onto the new `master` and
+  force-push so CI re-runs against the real post-merge base (a
+  retarget alone does not re-trigger the workflows). Only delete all
+  the stack branches at the very end, once everything is merged.
+  Never merge a higher PR before its base — that pulls the lower
+  change's diff in with it.
 - **A rejected lower PR collapses the stack.** If the base PR needs
   rework, rebase the rest of the stack onto its updated branch before
   continuing; don't let higher PRs drift onto stale bases.
