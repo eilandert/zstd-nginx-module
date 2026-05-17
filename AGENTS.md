@@ -226,6 +226,38 @@ python3 -c "import glob,yaml;[yaml.safe_load(open(f)) for f in glob.glob('.githu
   `master`, they will collide on test numbering + the plan constant.
   Flag this in the PR body; whichever merges later gets a trivial
   renumber rebase. Don't hide the conflict.
+
+### Stacked PRs (one PR per issue/change)
+
+When a single piece of work decomposes into several independent
+changes, ship them as a **stack** — one PR per logical change, each
+based on the previous PR's branch rather than all on `master`. This
+keeps every PR small and individually reviewable while preserving the
+real dependency order, instead of one sprawling diff or several PRs
+that secretly conflict.
+
+Rules:
+
+- **One PR per issue/change.** Each branch contains exactly one
+  logical change and its docs (README reference **and** TOC) — never
+  bundle an unrelated fix because it was convenient.
+- **Base each PR on the one below it**, not on `master`. The base
+  branch of PR _n_ is the head branch of PR _n−1_. Set it explicitly:
+  `gh pr create --base <lower-branch>`.
+- **Order by dependency, lowest-risk first.** Pure refactors and
+  hot-path cleanups go at the bottom of the stack; new directives and
+  default changes on top. A reviewer reading bottom-up sees each diff
+  in isolation.
+- **State the stack in every PR body.** List the full stack with links
+  and mark this PR's position, e.g. `Stack: #12 ← #13 (this) ← #14`,
+  and note "merge bottom-up".
+- **Merge strictly bottom-up.** Squash-merge the base PR first; GitHub
+  retargets the next PR onto `master` automatically. Re-check CI on
+  the newly retargeted PR before merging it. Never merge a higher PR
+  before its base — that pulls the lower change's diff in with it.
+- **A rejected lower PR collapses the stack.** If the base PR needs
+  rework, rebase the rest of the stack onto its updated branch before
+  continuing; don't let higher PRs drift onto stale bases.
 - Update `README.md` (reference **and** TOC) in the same PR as any
   user-visible directive/variable change. Keep `.github/CI_SETUP.md`
   truthful if you change CI structure.

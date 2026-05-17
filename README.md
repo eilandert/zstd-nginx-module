@@ -272,10 +272,12 @@ zstd_types
 ### zstd_buffers
 
 **Syntax:** `zstd_buffers number size;`
-**Default:** `zstd_buffers 32 4k;` (on 4 KB pages) or `zstd_buffers 16 8k;` (on 8 KB pages)
+**Default:** `zstd_buffers 4 32k;`
 **Context:** `http, server, location`
 
-Configures the number and size of output buffers used during compression. The total buffer space is `number × size`. The defaults give a fixed 128 KB of buffer space regardless of platform page size, which is appropriate for most workloads.
+Configures the number and size of output buffers used during compression. The total buffer space is `number × size`, which the default keeps at ~128 KB.
+
+The default was changed from many page-sized buffers (`32 4k`) to a few large ones (`4 32k`). zstd's natural output unit is roughly 128 KB; draining each compress call into a 4 KB buffer forced many extra compression round-trips and output-chain allocations per response. Larger buffers let each compress call flush a much bigger slice, reducing per-response CPU and allocation overhead at the same total memory. Configurations that set `zstd_buffers` explicitly are unaffected.
 
 Increasing these values allows larger chunks to be accumulated before writing, potentially improving throughput at the cost of higher per-request memory usage.
 
