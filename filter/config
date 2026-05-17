@@ -113,17 +113,10 @@ NGX_LD_OPT="$ngx_zstd_opt_L $NGX_LD_OPT"
 # The module compiles against older zstd (< 1.4.0) using fallback code
 # paths, but ZSTD_CCtx_reset() (1.5.0+) is used when available for
 # better performance. Versions below 1.4.0 are missing ZSTD_minCLevel().
-ngx_zstd_version=$(cat << 'ZVER_EOF'
-#include <stdio.h>
-#include <zstd.h>
-int main(void) { printf("%d\n", ZSTD_VERSION_NUMBER); return 0; }
-ZVER_EOF
-)
-ngx_zstd_ver=$(echo "$ngx_zstd_version" | \
-    $CC $ngx_zstd_opt_I -x c - -o /dev/null -E 2>/dev/null | \
-    grep ZSTD_VERSION_NUMBER | awk '{print $NF}' | head -1)
-
-# Simpler: extract directly from the header via the preprocessor
+#
+# Extract ZSTD_VERSION_NUMBER directly from the header via the
+# preprocessor: feed "#include <zstd.h>" + the macro name through the
+# compiler's -E and read the expanded value off the last line.
 ngx_zstd_ver=$(echo "#include <zstd.h>
 ZSTD_VERSION_NUMBER" | \
     $CC $ngx_zstd_opt_I -x c -E - 2>/dev/null | \
@@ -188,8 +181,14 @@ if [ "$ngx_module_link" != DYNAMIC ]; then
         next=ngx_http_range_header_filter_module
     fi
 
-    HTTP_FILTER_MODULES=`echo $HTTP_FILTER_MODULES \
-                         | sed "s/$ngx_module_name//" \
-                         | sed "s/$next/$next $ngx_module_name/"`
+    # Reorder as whitespace-delimited tokens, not raw substrings: a
+    # blanket "s/$name//" would also corrupt any module whose name
+    # contains $ngx_module_name (or $next) as a substring. Pad the list
+    # with surrounding spaces so every entry has space delimiters on
+    # both sides, then match " token " exactly.
+    HTTP_FILTER_MODULES=`echo " $HTTP_FILTER_MODULES " \
+                         | sed "s/ $ngx_module_name / /" \
+                         | sed "s/ $next / $next $ngx_module_name /" \
+                         | sed "s/^ *//;s/ *\$//"`
 fi
 
