@@ -827,6 +827,39 @@ ngx_http_zstd_filter_init_cctx(ngx_http_request_t *r,
         }
     }
 
+    /*
+     * When the response body length is known exactly (a declared
+     * Content-Length, i.e. the common proxied / static case), tell zstd
+     * up front. With the pledged size the encoder can size its internals
+     * to the input and write a more compact frame header (an exact
+     * content-size field instead of the streaming-unknown encoding),
+     * improving both speed and ratio slightly at no cost.
+     *
+     * This stays strictly per-request: it is set on this request's own
+     * CCtx after the reset above and before the first compress call,
+     * exactly as ZSTD_CCtx_setPledgedSrcSize() requires. It does NOT
+     * reintroduce a shared/worker-lifetime context — the per-request
+     * context model from 774b4a5 is a deliberate correctness guarantee
+     * and is preserved.
+     *
+     * content_length_n is the body length at this (post-other-filters)
+     * point, which is exactly what is fed to the compressor for a
+     * non-chunked response. The pledge is only an optimisation hint, so
+     * a failure to set it is logged and ignored rather than failing the
+     * request; a genuine size mismatch would still be caught by
+     * ZSTD_compressStream2() and handled on the existing failed: path.
+     */
+    if (r->headers_out.content_length_n != -1) {
+        rc = ZSTD_CCtx_setPledgedSrcSize(
+                 cctx, (unsigned long long) r->headers_out.content_length_n);
+        if (ZSTD_isError(rc)) {
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "zstd: ZSTD_CCtx_setPledgedSrcSize(%O) ignored: %s",
+                           r->headers_out.content_length_n,
+                           ZSTD_getErrorName(rc));
+        }
+    }
+
     return NGX_OK;
 }
 
