@@ -26,6 +26,7 @@ This is a hardened fork: every build is exercised against **nginx mainline and [
     * [zstd_buffers](#zstd_buffers)
     * [zstd_target_cblock_size](#zstd_target_cblock_size)
     * [zstd_window_log](#zstd_window_log)
+    * [zstd_bypass](#zstd_bypass)
     * [zstd_dict_file](#zstd_dict_file)
   * [ngx_http_zstd_static_module](#ngx_http_zstd_static_module)
     * [zstd_static](#zstd_static)
@@ -304,6 +305,55 @@ http {
     zstd_window_log   21;   # cap the window at 2 MB per request
 }
 ```
+
+---
+
+### zstd_bypass
+
+**Syntax:** `zstd_bypass string ...;`
+**Default:** `—`
+**Context:** `http, server, location`
+
+Disables on-the-fly compression for the current request when at least
+one of the given string parameters evaluates to a non-empty value that
+is not `"0"`. Each parameter is typically a variable (often driven by a
+`map`), so the decision is made per request rather than statically.
+
+```nginx
+map $request_uri $no_zstd {
+    default              0;
+    ~^/wp-admin/         1;   # authenticated admin: reflects input + nonces
+    ~^/wp-json/          1;   # REST: responses mix tokens with user data
+}
+
+server {
+    zstd on;
+    zstd_bypass $no_zstd;            # skip those paths
+    zstd_bypass $http_x_no_compression;  # honour a client opt-out header
+}
+```
+
+> **Security note — BREACH:** `zstd_bypass` is the intended lever for
+> mitigating [BREACH](https://en.wikipedia.org/wiki/BREACH)-style
+> attacks, which exploit the *size* of a compressed HTTP body that
+> contains **both** a secret (CSRF token, session data) **and**
+> attacker-influenced reflected input. Use it to serve identity on the
+> specific endpoints where that combination occurs.
+>
+> Be honest about what this does and does not do: **no HTTP compressor
+> can be made BREACH-safe while still compressing** — the attack is
+> inherent to compression ratio as a side channel. `zstd_bypass` only
+> lets you *exclude* the at-risk responses. The effective, primary
+> BREACH defenses live in the application: per-request CSRF token
+> masking, separating secrets from reflected input, and
+> referer/origin checks. Treat `zstd_bypass` as a containment tool, not
+> a fix. (CRIME and POODLE are unrelated TLS-layer attacks and are not
+> addressed — or addressable — here; configure `ssl_protocols`
+> appropriately instead.)
+
+> **Note:** length-padding "anti-BREACH" schemes are intentionally
+> **not** provided: small pads are defeated statistically and large
+> ones waste bandwidth, giving false confidence.
 
 ---
 

@@ -29,6 +29,8 @@ typedef struct {
     ssize_t                      target_cblock_size;  /* Issue #38: ZSTD_c_targetCBlockSize */
     ngx_int_t                    window_log;          /* ZSTD_c_windowLog: bounds per-request memory */
 
+    ngx_array_t                 *bypass;              /* ngx_http_complex_value_t: per-request bypass */
+
     ngx_hash_t                   types;
 
     ngx_bufs_t                   bufs;
@@ -184,6 +186,13 @@ static ngx_command_t  ngx_http_zstd_filter_commands[] = {
       offsetof(ngx_http_zstd_loc_conf_t, window_log),
       NULL },
 
+    { ngx_string("zstd_bypass"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_http_set_predicate_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_zstd_loc_conf_t, bypass),
+      NULL },
+
     { ngx_string("zstd_dict_file"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
@@ -252,6 +261,23 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
        || ngx_http_test_content_type(r, &zlcf->types) == NULL
        || r->header_only)
     {
+        return ngx_http_next_header_filter(r);
+    }
+
+    /*
+     * Per-request bypass. If any zstd_bypass predicate variable resolves
+     * to a non-empty value other than "0", skip compression for this
+     * request. This is the operator lever for serving identity on
+     * endpoints that must not be compressed — e.g. responses that mix a
+     * secret (CSRF token, session data) with attacker-influenced
+     * reflected input (a BREACH-style exposure), or already-compressed
+     * dynamic payloads — without splitting the location.
+     */
+    if (zlcf->bypass != NULL
+        && ngx_http_test_predicates(r, zlcf->bypass) != NGX_OK)
+    {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "zstd: bypassed by zstd_bypass predicate");
         return ngx_http_next_header_filter(r);
     }
 
@@ -833,6 +859,7 @@ ngx_http_zstd_create_loc_conf(ngx_conf_t *cf)
     conf->max_length = NGX_CONF_UNSET;
     conf->target_cblock_size = NGX_CONF_UNSET;
     conf->window_log = NGX_CONF_UNSET;
+    conf->bypass = NGX_CONF_UNSET_PTR;
 
     return conf;
 }
@@ -862,6 +889,7 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->max_length, prev->max_length, NGX_CONF_UNSET);
     ngx_conf_merge_value(conf->target_cblock_size, prev->target_cblock_size, 0);
     ngx_conf_merge_value(conf->window_log, prev->window_log, 0);
+    ngx_conf_merge_ptr_value(conf->bypass, prev->bypass, NULL);
 
     if (ngx_http_merge_types(cf, &conf->types_keys, &conf->types,
                              &prev->types_keys, &prev->types,
