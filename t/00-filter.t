@@ -25,7 +25,7 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 150;
+plan tests => repeat_each() * (blocks() * 3) + 153;
 run_tests();
 
 
