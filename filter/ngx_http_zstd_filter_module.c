@@ -332,6 +332,14 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         return ngx_http_next_body_filter(r, in);
     }
 
+    /*
+     * Fetch the location conf once. It cannot change for the lifetime of
+     * a request, so resolving it per inner-loop iteration (as the
+     * zstd_max_length check below previously did) only adds module-index
+     * indirection to the hottest path.
+     */
+    zlcf = ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
+
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http zstd filter");
 
@@ -399,9 +407,6 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
              * to fail the request — protecting the worker is preferred
              * over completing one runaway response.
              */
-            zlcf = ngx_http_get_module_loc_conf(r,
-                                                ngx_http_zstd_filter_module);
-
             if (zlcf->max_length != NGX_CONF_UNSET
                 && r->headers_out.content_length_n == -1
                 && (off_t) ctx->bytes_in > (off_t) zlcf->max_length)
