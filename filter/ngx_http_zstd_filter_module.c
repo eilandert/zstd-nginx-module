@@ -320,9 +320,10 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
-    ngx_int_t             flush, rc;
-    ngx_chain_t          *cl;
-    ngx_http_zstd_ctx_t  *ctx;
+    ngx_int_t                  flush, rc;
+    ngx_chain_t               *cl;
+    ngx_http_zstd_ctx_t       *ctx;
+    ngx_http_zstd_loc_conf_t  *zlcf;
 
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_zstd_filter_module);
@@ -383,6 +384,33 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
             if (rc == NGX_AGAIN) {
                 continue;
+            }
+
+            /*
+             * Length-independent input cap. The header filter already
+             * rejects responses whose advertised Content-Length exceeds
+             * zstd_max_length, but a chunked/streaming response carries no
+             * Content-Length, so that check is skipped and an abusive or
+             * runaway upstream could feed the compressor unbounded input
+             * (worker CPU/memory exhaustion). Enforce the same limit
+             * against the running input total here. Compression has
+             * already started and the client is receiving a
+             * Content-Encoding: zstd stream, so the only safe action is
+             * to fail the request — protecting the worker is preferred
+             * over completing one runaway response.
+             */
+            zlcf = ngx_http_get_module_loc_conf(r,
+                                                ngx_http_zstd_filter_module);
+
+            if (zlcf->max_length != NGX_CONF_UNSET
+                && r->headers_out.content_length_n == -1
+                && (off_t) ctx->bytes_in > (off_t) zlcf->max_length)
+            {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "zstd: input exceeded zstd_max_length (%O) on a "
+                              "response with no Content-Length; aborting to "
+                              "protect the worker", (off_t) zlcf->max_length);
+                goto failed;
             }
 
             rc = ngx_http_zstd_filter_get_buf(r, ctx);
