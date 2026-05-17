@@ -218,6 +218,21 @@ This filter module compresses responses on the fly using zstd. It runs after the
 
 Enables or disables on-the-fly zstd compression for responses.
 
+**Example:**
+
+```nginx
+http {
+    zstd       on;          # enable everywhere
+    gzip_vary  on;          # required: see the note above
+
+    server {
+        location /downloads/ {
+            zstd off;       # already-compressed archives: skip
+        }
+    }
+}
+```
+
 ---
 
 ### zstd_comp_level
@@ -242,6 +257,25 @@ Sets the zstd compression level. Accepted values depend on the installed zstd li
 * Negative levels (`-1` to `-5`) — Ultra-fast, for cases where you want some compression with nearly zero overhead.
 
 For most web-serving workloads, levels `1`–`3` are recommended. Avoid high levels (> 9) in production unless responses are generated infrequently and cached.
+
+**Example:**
+
+```nginx
+http {
+    zstd             on;
+    zstd_comp_level  3;          # balanced default for live traffic
+
+    server {
+        location /api/ {
+            zstd_comp_level 1;   # latency-sensitive: fastest level
+        }
+
+        location /reports/ {
+            zstd_comp_level 12;  # large, cached, infrequently generated
+        }
+    }
+}
+```
 
 > **Performance note:** when a response has a known exact
 > `Content-Length` (the common proxied/static case), the module passes
@@ -335,6 +369,25 @@ The default buffer **size** is `ZSTD_CStreamOutSize()` — the value libzstd doc
 The default **count** is `2`: one buffer being filled by the compressor while the other is in flight down the output chain. This sets the per-request filter-memory floor at roughly `2 × ZSTD_CStreamOutSize()` (~256 KB), up from the previous ~128 KB — the deliberate cost of never forcing zstd to flush mid-block. If that trade is wrong for your workload (many concurrent connections, memory-constrained), set `zstd_buffers` explicitly to a smaller value; configurations that set it are unaffected by this default.
 
 Increasing these values allows larger chunks to be accumulated before writing, potentially improving throughput at the cost of higher per-request memory usage.
+
+**Example:**
+
+```nginx
+http {
+    zstd on;
+
+    # Leave it unset to use the tuned default
+    # (2 x ZSTD_CStreamOutSize(), ~256 KB/request).
+
+    server {
+        # Memory-constrained box with very high concurrency:
+        # trade some throughput for a lower per-request floor.
+        location /high-fanout/ {
+            zstd_buffers 4 16k;   # 64 KB/request instead of ~256 KB
+        }
+    }
+}
+```
 
 ---
 
@@ -490,6 +543,27 @@ Loads a pre-trained zstd dictionary for use during compression. Dictionaries can
 
 > **Warning:** The `Content-Encoding: zstd` token in HTTP does not include any mechanism for the client to discover or negotiate which dictionary the server is using. Only use this directive if you control both ends of the connection and can guarantee that both the server and client use the same dictionary (for example, by advertising it via a custom HTTP header). See [tokers/zstd-nginx-module#2](https://github.com/tokers/zstd-nginx-module/issues/2) for background.
 
+**Example:**
+
+```nginx
+http {
+    # Loaded once per cycle; must be readable by the nginx user.
+    # Train it with: zstd --train samples/*.json -o /etc/nginx/api.dict
+    zstd_dict_file  /etc/nginx/api.dict;
+
+    zstd            on;
+    zstd_types      application/json;
+
+    server {
+        location /api/ {
+            # Tell a cooperating client which dictionary was used,
+            # since HTTP cannot negotiate it (see warning above).
+            add_header X-Zstd-Dict "api.dict-v1" always;
+        }
+    }
+}
+```
+
 ---
 
 ## ngx_http_zstd_static_module
@@ -553,7 +627,9 @@ log_format main '$remote_addr - $request - ratio: $zstd_ratio';
 
 The number of uncompressed (input) bytes the filter consumed for the
 current response. Only set once the filter has finished compressing the
-response (log phase); not found otherwise.
+response (log phase); not found otherwise. See
+[`$zstd_bytes_out`](#zstd_bytes_out) below for a combined `log_format`
+example.
 
 ## $zstd_bytes_out
 
