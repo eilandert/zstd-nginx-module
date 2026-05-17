@@ -544,3 +544,40 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           bash tools/test_reload_leak.sh "$TEST_NGINX_BINARY" 5
+
+  # ── Sustained mixed-load soak under ASAN+UBSAN ───────────────────────────
+  #    Production-shaped load that single-shot tests do not give. Long, so
+  #    it runs only on the weekly schedule and manual dispatch — never on
+  #    the per-PR path.
+  soak-asan:
+    name: Soak ASAN+UBSAN
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: build-asan
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd libzstd1 curl
+
+      - name: Download ASAN nginx binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nginx-binary-asan
+          path: nginx-bin
+
+      - name: Set up nginx binary
+        run: chmod +x nginx-bin/nginx
+
+      - name: Soak (10 min, 8 concurrent, mixed payloads) under ASAN+UBSAN
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          bash tools/soak.sh "$GITHUB_WORKSPACE/nginx-bin/nginx" 600 8

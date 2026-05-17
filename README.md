@@ -34,7 +34,11 @@ This is a hardened fork: every build is exercised against **nginx mainline and [
   * [$zstd_ratio](#zstd_ratio)
   * [$zstd_bytes_in](#zstd_bytes_in)
   * [$zstd_bytes_out](#zstd_bytes_out)
+* [Compatibility](#compatibility)
 * [Testing & CI](#testing--ci)
+* [Benchmarks](#benchmarks)
+* [Operations](#operations)
+* [Security](#security)
 * [Author](#author)
 * [License](#license)
 
@@ -112,6 +116,31 @@ load_module modules/ngx_http_zstd_static_module.so;
 * If you are using a custom zstd installation, set `ZSTD_INC` (path to `zstd.h`) and `ZSTD_LIB` (path to the library) before running `configure`. If unset, the system-installed zstd is used.
 * Dynamic modules (`.so`) require dynamic linking against `libzstd.so`. The build scripts auto-detect and prefer this. Ensure the zstd shared library is installed and available at runtime (`libzstd-dev` on Debian/Ubuntu, `libzstd-devel` on RHEL/Fedora).
 * When `ZSTD_LIB` is set to a non-standard path, the build embeds an RPATH pointing to that directory in the module `.so`. This means the module will load `libzstd.so` from that exact path at runtime. If the library is later moved (e.g. by a package upgrade), the module will fail to load. Use the system package and leave `ZSTD_LIB` unset to avoid this.
+
+# Compatibility
+
+| Component | Minimum | Recommended | CI-verified |
+|---|---|---|---|
+| **nginx** | 1.9.11 (first `--add-dynamic-module` release) | latest mainline / stable | **1.31.0 mainline** |
+| **Angie** | 1.x | latest | **1.11.5** |
+| **libzstd** | **1.4.0** | **≥ 1.5.6** | 1.5.x |
+| **OS** | Linux/BSD/RHEL-family | — | Ubuntu (GitHub runners) |
+
+Notes on the libzstd floor — these are enforced in code, not assumed:
+
+* **< 1.4.0**: the streaming API the module uses (`ZSTD_compressStream2`)
+  is unavailable; this is the hard minimum. Negative `zstd_comp_level`
+  values are also unsupported and are clamped to `1` with a warning
+  (guarded by `#if ZSTD_VERSION_NUMBER >= 10400`).
+* **< 1.5.6**: `zstd_target_cblock_size` has no effect — the directive
+  is accepted but silently ignored (`#ifdef ZSTD_c_targetCBlockSize`).
+  Everything else works.
+* **≥ 1.5.6**: every directive is fully functional.
+
+"CI-verified" means every push builds and runs the full test suite
+against that exact version (see [Testing & CI](#testing--ci)). Other
+versions within the stated ranges are expected to work but are not
+continuously exercised.
 
 # Directives
 
@@ -480,6 +509,96 @@ python3 tools/test_encoding.py --nginx-binary /path/to/nginx
 # Build and run the fuzzer (needs clang)
 bash fuzz/build.sh && ./fuzz/fuzz_accept_encoding -max_total_time=60 fuzz/corpus/
 ```
+
+# Benchmarks
+
+Reproduce with `python3 tools/benchmark.py` (drives the `zstd`/`gzip`
+CLIs linked against the same libzstd/zlib, so ratio is machine-stable;
+throughput scales with CPU). Figures below: **libzstd 1.5.5**, single
+core, `--repeat 3`, best wall-time.
+
+| Payload | Codec | Ratio | MB/s |
+|---|---|---:|---:|
+| HTML, 58 KB (test fixture) | gzip-6 | 15.5 | 29 |
+| | zstd-3 | 16.1 | 12 |
+| | zstd-19 | 17.1 | 0.8 |
+| JSON API, 256 KB | gzip-6 | 12.5 | 72 |
+| | zstd-1 | 43.8 | 52 |
+| | zstd-3 | 33.6 | 43 |
+| JS, 512 KB | gzip-6 | 12.7 | 108 |
+| | zstd-1 | 63.6 | 87 |
+| | zstd-3 | 40.8 | 78 |
+| Random 256 KB (incompressible) | gzip-6 | 1.00 | 31 |
+| | zstd-3 | 1.00 | 36 |
+
+Honest reading of these numbers:
+
+* On **small** payloads (the 58 KB HTML fixture), low-level zstd is
+  roughly on par with `gzip -6` and a touch slower — gzip is well tuned
+  for small text. zstd's advantage grows with payload size.
+* On **larger, structured** payloads zstd at a *low* level beats gzip
+  decisively on both ratio and speed (e.g. ~44× vs ~12× on JSON,
+  faster too). For typical web traffic, `zstd_comp_level 1`–`3` is the
+  sweet spot.
+* The synthetic JSON/JS generators are deliberately repetitive, so
+  ratios there are inflated and *higher zstd levels show a lower ratio*
+  — an artefact of trivially-redundant input, **not** representative of
+  real assets. The HTML fixture (real-world content) shows the expected
+  monotonic "higher level → better ratio, slower".
+* High levels (≥ 9) cost CPU steeply for marginal gain on web content —
+  reserve them for infrequently-generated, cached responses.
+
+# Operations
+
+**Reloads (`nginx -s reload`).** Compression state is per request: a
+`ZSTD_CCtx` is created/reset per request and freed via an nginx pool
+cleanup. A graceful reload spins up new workers and drains old ones
+normally — in-flight responses on old workers finish on their existing
+context; new requests use new workers. There is no shared compression
+state to corrupt across a reload. The `zstd_dict_file` `ZSTD_CDict` is
+loaded once per cycle and freed on the old cycle's cleanup; a
+reload-leak regression for exactly this runs under ASAN in CI
+(`tools/test_reload_leak.sh`).
+
+**`zstd_dict_file`.** Loaded at config load in the `http` context, into
+a `ZSTD_CDict` shared read-only by all workers (dictionary size capped
+at 10 MB). The dictionary must be readable by the nginx user at config
+load and reload. Changing it requires a reload. **Both ends must agree
+on the dictionary**: HTTP has no dictionary negotiation, so only use
+this where you control client and server (see the directive's warning).
+
+**Rollback.** The module adds no persistent state, on-disk format, or
+schema — it only transforms response bodies in memory. Rolling back is
+purely "load the previous `.so` / previous nginx binary and reload":
+
+1. Keep the previously-known-good module `.so` (or full nginx binary).
+2. To disable instantly without a binary change: set `zstd off;` (and
+   `zstd_static off;`) and `nginx -s reload` — responses immediately
+   serve identity; no client/cache corruption (compressed and
+   identity variants differ only by `Content-Encoding`, and
+   `gzip_vary on` keeps caches correct).
+3. To revert the binary: restore the prior `.so`/binary, `nginx -t`,
+   then `nginx -s reload`.
+
+No data migration, no irreversible step. A bad deploy is a one-line
+config change or a binary swap away from rolled back.
+
+**Pre-deploy soak.** `tools/soak.sh <nginx> <seconds> <concurrency>`
+drives sustained mixed load (tiny/medium/large/compressible payloads,
+zstd and non-zstd clients, the bypass path, a chunked upstream) and
+fails on any sanitizer report, leak, crash, `[alert]`/`[emerg]`, or
+corrupted response. Run it against an ASAN/UBSAN build (optionally
+`USE_VALGRIND=1`) before shipping a change. CI runs a 10-minute soak
+under ASAN+UBSAN on the weekly schedule (`Soak ASAN+UBSAN` job).
+
+# Security
+
+Compression of HTTP responses has a security dimension. See
+[`SECURITY.md`](SECURITY.md) for the vulnerability-disclosure process
+and the explicit in-scope / out-of-scope boundary (notably: BREACH
+containment is `zstd_bypass`, not a fix; CRIME/POODLE are TLS-layer and
+out of scope). The request parser is continuously fuzzed and the module
+is built and load-tested under ASAN/UBSAN.
 
 # Author
 
