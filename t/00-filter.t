@@ -25,7 +25,7 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 147;
+plan tests => repeat_each() * (blocks() * 3) + 153;
 run_tests();
 
 
@@ -947,6 +947,71 @@ GET /filter
 --- more_headers
 Accept-Encoding: zstd
 --- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 40: zstd_bypass skips compression when the predicate is truthy
+# A request header maps to a bypass variable; when it is set to a
+# non-empty value other than "0", the response must be served identity
+# even though the client supports zstd and the type/size qualify.
+--- http_config
+    map $http_x_no_zstd $zstd_off {
+        default 0;
+        "1"     1;
+    }
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        zstd_bypass $zstd_off;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+    }
+    location /test {
+        root $TEST_NGINX_PERL_PATH/suite/;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+X-No-Zstd: 1
+--- response_headers
+Content-Length: 59738
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 41: zstd_bypass value "0" does NOT bypass (still compresses)
+# Same config, but the bypass variable resolves to "0", which per
+# ngx_http_test_predicates is falsy — compression must still happen.
+# Pins the "0"/empty == not-bypassed contract.
+--- http_config
+    map $http_x_no_zstd $zstd_off {
+        default 0;
+        "1"     1;
+    }
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        zstd_bypass $zstd_off;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+    }
+    location /test {
+        root $TEST_NGINX_PERL_PATH/suite/;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Length
 Content-Encoding: zstd
 --- no_error_log
 [error]
