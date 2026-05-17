@@ -998,8 +998,17 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     ngx_conf_merge_ptr_value(conf->dict, prev->dict, NULL);
-    ngx_conf_merge_bufs_value(conf->bufs, prev->bufs,
-                              (128 * 1024) / ngx_pagesize, ngx_pagesize);
+    /*
+     * Default to a few large buffers rather than many page-sized ones.
+     * zstd's natural output unit is ZSTD_CStreamOutSize() (~128 KB);
+     * draining each ZSTD_compressStream2() call into a 4 KB buffer forced
+     * many extra compress round-trips and ngx_alloc_chain_link() calls per
+     * response. 4 x 32 KB keeps total filter memory at the previous
+     * ~128 KB while letting each compress call flush a far larger slice,
+     * cutting inner-loop iterations and chain churn. Operators who tuned
+     * zstd_buffers explicitly are unaffected (merge keeps their value).
+     */
+    ngx_conf_merge_bufs_value(conf->bufs, prev->bufs, 4, 32 * 1024);
 
     zmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_zstd_filter_module);
 
