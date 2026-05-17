@@ -25,7 +25,7 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 153;
+plan tests => repeat_each() * (blocks() * 3) + 147;
 run_tests();
 
 
@@ -1015,3 +1015,41 @@ Accept-Encoding: zstd
 Content-Encoding: zstd
 --- no_error_log
 [error]
+
+
+
+=== TEST 42: zstd_max_length is enforced on a chunked upstream (no Content-Length)
+# Regression for the length-independent input cap. TEST 37 covers the
+# known-Content-Length case (rejected in the header filter). This covers
+# the genuine DoS vector: an upstream that streams chunked with NO
+# Content-Length, so the header-filter check is skipped. A mock TCP
+# backend returns a chunked body far larger than zstd_max_length;
+# compression has already started, so the only safe action is to abort
+# the request — the worker must not be fed unbounded input. We assert
+# the dedicated abort message is logged.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_max_length 100;
+        zstd_types text/plain;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/up;
+    }
+    location /up {
+        proxy_http_version 1.1;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_RAND_PORT_1/;
+    }
+--- tcp_listen: $TEST_NGINX_RAND_PORT_1
+--- tcp_no_close
+--- tcp_reply eval
+"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+. sprintf("%x\r\n", 5000) . ("A" x 5000) . "\r\n0\r\n\r\n"
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- ignore_response
+--- error_log
+input exceeded zstd_max_length (100) on a response with no Content-Length
