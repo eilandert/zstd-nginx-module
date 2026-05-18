@@ -59,6 +59,13 @@ jobs:
         with:
           languages: c-cpp
           queries: security-extended
+          paths: |
+            filter
+            static
+            *.c
+            *.h
+          paths-ignore: |
+            nginx-*
 
       - name: Build module sources for CodeQL
         run: |
@@ -83,4 +90,3 @@ jobs:
         uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3
         with:
           category: "/language:c-cpp"
-
