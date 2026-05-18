@@ -670,7 +670,26 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
      */
     last = rc == 0 && ctx->last && directive == ZSTD_e_end;
 
+    /*
+     * Structured emit-decision trace. Permanent: compiled out of
+     * release builds via NGX_DEBUG (zero runtime cost when off),
+     * visible with `error_log ... debug`. This is the single most
+     * useful probe for the module's recurring truncation /
+     * zero-size-buffer / terminal-frame bug class — it records exactly
+     * what the emit guard saw (output size, libzstd return, terminal
+     * and flush state, action) so future diagnosis is one
+     * `error_log debug` away instead of a patch/rebuild cycle. Behaviour
+     * is unchanged; this only observes.
+     */
+    ngx_log_debug6(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "zstd emit?: outsz:%uz rc0:%d last:%d ctx_last:%d "
+                   "ctx_flush:%d action:%d",
+                   (size_t) ngx_buf_size(ctx->out_buf), rc == 0, last,
+                   ctx->last, ctx->flush, (ngx_uint_t) ctx->action);
+
     if (ngx_buf_size(ctx->out_buf) == 0 && !last && !(rc == 0 && ctx->flush)) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "zstd emit: suppressed empty non-terminal buffer");
         return NGX_AGAIN;
     }
 
