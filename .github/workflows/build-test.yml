@@ -547,6 +547,22 @@ jobs:
             --reloads 6 --workers 4 --duration 18
           echo "✓ reload-under-load correctness regression passed"
 
+      - name: Run zstd_long (LDM) directive regression
+        timeout-minutes: 6
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # 8edb7bb zstd_long class: the directive had ZERO coverage.
+          # A 16 MiB body whose duplicate region repeats beyond the
+          # level-6 default window must (a) decode byte-exact and
+          # (b) compress ~2:1 smaller with zstd_long on than off —
+          # proving ZSTD_c_enableLongDistanceMatching actually reached
+          # libzstd and engaged, and the directive neither corrupts nor
+          # truncates the stream (the bug-B failure mode).
+          python3 tools/test_zstd_long_ldm.py \
+            --nginx-binary "$TEST_NGINX_BINARY" \
+            --port 18102 --backend-port 18103
+          echo "✓ zstd_long (LDM) directive regression passed"
+
       - name: Test summary
         if: success()
         run: echo "✓ All Perl + Python end-to-end tests passed"
