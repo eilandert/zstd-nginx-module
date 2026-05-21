@@ -1741,11 +1741,40 @@ static char *
 ngx_http_zstd_check_size_int_max(ngx_conf_t *cf, void *post, void *data)
 {
     ssize_t  *sp = data;
+    char     *rc;
 
     (void) post;
 
-    return ngx_http_zstd_int_max_bound(cf, (ngx_int_t) *sp,
-                                       "zstd_target_cblock_size");
+    rc = ngx_http_zstd_int_max_bound(cf, (ngx_int_t) *sp,
+                                     "zstd_target_cblock_size");
+    if (rc != NGX_CONF_OK) {
+        return rc;
+    }
+
+    /*
+     * ZSTD_c_targetCBlockSize first appears in libzstd 1.5.6. On older
+     * versions the parameter is undefined and the apply-site at
+     * ngx_http_zstd_filter_init_cctx() is #ifdef'd out — meaning the
+     * directive is silently ignored at runtime with no feedback to the
+     * operator. Warn loudly at config load so the config is
+     * recognisable as a no-op rather than appearing to "work" while
+     * having no effect. The directive is still accepted (a hard reject
+     * would break configs that intentionally target newer libzstd at
+     * runtime via library upgrades without rebuilding nginx). Suppress
+     * the warning when the value is 0 (the unset default).
+     */
+#ifndef ZSTD_c_targetCBlockSize
+    if (*sp > 0) {
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                           "\"zstd_target_cblock_size\" is set but the "
+                           "module was built against libzstd without "
+                           "ZSTD_c_targetCBlockSize support (requires "
+                           "libzstd >= 1.5.6); the directive will have "
+                           "no effect at runtime");
+    }
+#endif
+
+    return NGX_CONF_OK;
 }
 
 
