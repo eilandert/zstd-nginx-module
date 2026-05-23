@@ -496,7 +496,10 @@ Vary: Accept-Encoding
 # A zero-byte .zst cannot satisfy the 4-byte pread() magic check;
 # the handler must decline rather than serve an empty body with
 # Content-Encoding: zstd. TEST 21 covers the wrong-magic case;
-# this locks the truncated-to-zero edge specifically.
+# this locks the truncated-to-zero edge specifically. Like TEST 21,
+# no uncompressed fallback is placed alongside empty.zst, so a
+# benign ENOENT on the fallback path is expected and not asserted
+# against.
 --- config
     location /empty_zst {
         zstd_static on;
@@ -511,8 +514,6 @@ Accept-Encoding: zstd
 --- error_code: 404
 --- response_headers
 !Content-Encoding
---- no_error_log
-[error]
 
 
 
