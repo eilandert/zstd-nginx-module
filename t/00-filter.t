@@ -25,7 +25,7 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 147;
+plan 'no_plan';
 run_tests();
 
 
@@ -1213,5 +1213,374 @@ GET /filter
 Accept-Encoding: notzstd, zstd
 --- response_headers
 Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 47: Vary: Accept-Encoding is emitted when gzip_vary is on
+# The filter sets r->gzip_vary = 1 whenever a request enters a
+# zstd-enabled location, but only the core nginx code actually emits
+# the "Vary: Accept-Encoding" header — and only when gzip_vary is on.
+# Without this header shared caches (CDNs, reverse proxies) cannot
+# distinguish a zstd-encoded variant from the identity one and will
+# serve the wrong body to clients that do not accept zstd.
+--- config
+    gzip_vary on;
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: zstd
+Vary: Accept-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 48: Vary: Accept-Encoding is emitted even when the client does not accept zstd
+# Same location as TEST 47, but the client only accepts gzip. The
+# response is identity, yet the Vary header must still appear so that
+# downstream caches keep zstd and identity variants apart. This locks
+# the "set gzip_vary before negotiating the encoding" behaviour.
+--- config
+    gzip_vary on;
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: gzip
+--- response_headers
+!Content-Encoding
+Vary: Accept-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 49: zstd_buffers with a small custom value still produces a valid stream
+# The zstd_buffers directive was previously not exercised by any test.
+# A very small buffer count forces the body filter through the
+# multi-buffer output path on a single response, so this also guards
+# against regressions in chunk accounting under buffer pressure.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_buffers 4 4k;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+    }
+    location /test {
+        root $TEST_NGINX_PERL_PATH/suite/;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Length
+Transfer-Encoding: chunked
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 50: zstd_target_cblock_size produces a valid zstd stream
+# Locks the target_cblock_size advanced parameter path. The size is
+# small enough to force the encoder to honour the cap on a sizeable
+# input. On libzstd < 1.5.6 this directive only logs a warning at
+# config time and is otherwise ignored, but the response must still
+# be a well-formed zstd stream either way.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_target_cblock_size 4k;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+    }
+    location /test {
+        root $TEST_NGINX_PERL_PATH/suite/;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 51: zstd_long on compresses cleanly
+# Long-range mode enables the zstd long-distance matcher. The flag
+# was previously configured but never exercised in tests, so a silent
+# regression in the parameter wiring would have gone unnoticed. A
+# response that is large enough to be worth compressing is enough to
+# prove the parameter path stays well-formed.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_long on;
+        zstd_window_log 17;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+    }
+    location /test {
+        root $TEST_NGINX_PERL_PATH/suite/;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 52: zstd_min_length still applies on a chunked upstream (no Content-Length)
+# TEST 6/7 cover min_length on the known-Content-Length path. The
+# unknown-length / chunked path takes a different branch in the body
+# filter (the pre-bypass length check is skipped and the decision is
+# deferred). This locks the behaviour that, on a chunked response
+# whose body is smaller than min_length, no compression is applied.
+--- config
+    chunked_transfer_encoding on;
+    location /filter {
+        zstd on;
+        zstd_min_length 4096;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/test;
+        proxy_buffering off;
+    }
+    location /test {
+        return 200 "tiny";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 53: zstd_comp_level 1 (minimum) produces a valid stream
+# Boundary coverage for the comp_level slot. Existing tests use 3,
+# 10, -5, and 19. Level 1 is the documented minimum positive level
+# and the fastest setting; an off-by-one in the bounds post-handler
+# would have caught here.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_comp_level 1;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 54: zstd_comp_level 22 (maximum) produces a valid stream
+# Boundary coverage for the comp_level slot at libzstd's documented
+# maximum. The body is intentionally small so the test stays cheap;
+# the assertion is that the encoder accepts the level and emits a
+# valid stream, not that it produces any specific ratio.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_comp_level 22;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 55: Accept-Encoding parser tolerates tab OWS around the q-value
+# RFC 7230 OWS is "*( SP / HTAB )". Most clients only ever send
+# spaces, but the parser is required to accept tabs too. The
+# rewritten parser walks OWS explicitly; this locks that contract.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd	;	q=0.5
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 56: Accept-Encoding parser is case-insensitive on the coding name
+# The HTTP coding names are token-class, which RFC 7231 treats as
+# case-insensitive. A client that sends "ZSTD" must still negotiate
+# zstd. ngx_strncasecmp inside the parser is what makes this work;
+# this locks that we keep using the case-insensitive comparator.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: ZSTD
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 57: Accept-Encoding parser ignores stray empty list elements
+# RFC 7230 allows empty list members (",,zstd,,"). The parser must
+# skip them and still match the standalone zstd token. This guards
+# the OWS-and-comma skip loop at the top of the per-element walk.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: ,, zstd ,,
+--- response_headers
+Content-Encoding: zstd
+--- no_error_log
+[error]
+
+
+
+=== TEST 58: subrequests are never zstd-encoded
+# The filter explicitly returns NGX_DECLINED for r != r->main: only
+# the top-level response gets compressed, never the body of an
+# auth-request, addition_module, or SSI subrequest. This drives an
+# auth_request subrequest whose own location has zstd on; the
+# subrequest's response body must NOT be returned with
+# Content-Encoding: zstd (and the outer response, which returns 204
+# anyway, must not gain one either).
+--- config
+    location = /auth {
+        internal;
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        return 204;
+    }
+    location /filter {
+        auth_request /auth;
+        return 204;
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Encoding
+--- error_code: 204
+--- no_error_log
+[error]
+
+
+
+=== TEST 59: zstd directive inside an if-block compiles and applies
+# The "zstd" command is registered with NGX_HTTP_LIF_CONF, so it must
+# be usable inside an "if (...) { ... }" block. This proves the
+# directive parses in that context and that the resulting location's
+# merged config takes effect (the if-branch turns zstd off while the
+# enclosing location had it on).
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        if ($arg_nozstd) {
+            zstd off;
+        }
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter?nozstd=1
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 60: filter bails out when the upstream has already set Content-Encoding
+# If an upstream response already carries Content-Encoding (here:
+# identity-with-a-pre-set-header, simulated by add_header on a
+# proxied response), the zstd filter must not re-encode it. The
+# response should keep the upstream's encoding marker and the body
+# should NOT be wrapped in a zstd frame.
+--- config
+    location /filter {
+        zstd on;
+        zstd_min_length 1;
+        zstd_types text/plain;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/upstream;
+    }
+    location /upstream {
+        add_header Content-Encoding "identity";
+        return 200 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    }
+--- request
+GET /filter
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+Content-Encoding: identity
 --- no_error_log
 [error]

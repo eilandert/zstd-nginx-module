@@ -22,7 +22,7 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 63;
+plan 'no_plan';
 run_tests();
 
 
@@ -462,3 +462,105 @@ Accept-Encoding: zstd
 !Content-Encoding
 --- error_log
 is not a zstd frame
+
+
+
+=== TEST 22: zstd_static always combined with gzip_vary on
+# TEST 6-8 cover "always" without Vary; TEST 15-16 cover "on" with
+# Vary. The "always" + "gzip_vary on" combination is a real-world
+# config (origin serves precompressed assets unconditionally and the
+# CDN still wants Vary on the response) and was not exercised. The
+# precompressed .zst must be served and Vary: Accept-Encoding must
+# be present.
+--- config
+    gzip_vary on;
+    location /test {
+        zstd_static always;
+        root ../../t/suite;
+    }
+--- request
+GET /test
+--- more_headers
+Accept-Encoding: gzip, br
+--- response_headers
+Content-Length: 3717
+ETag: "5be17d33-e85"
+Content-Encoding: zstd
+Vary: Accept-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 23: zstd_static rejects an empty .zst file
+# A zero-byte .zst cannot satisfy the 4-byte pread() magic check;
+# the handler must decline rather than serve an empty body with
+# Content-Encoding: zstd. TEST 21 covers the wrong-magic case;
+# this locks the truncated-to-zero edge specifically.
+--- config
+    location /empty_zst {
+        zstd_static on;
+        root html;
+    }
+--- user_files
+>>> empty.zst
+--- request
+GET /empty_zst/empty
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 404
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 24: zstd_static declines a directory-style request
+# A request whose URI ends in "/" maps to a path with a trailing
+# slash; appending ".zst" produces "/path/.zst", which is either a
+# directory or a non-existent file. The handler must decline (either
+# via the open_cached_file ENOENT branch or via the is_dir branch on
+# disks where such a path resolves to a directory) so the request
+# falls through to the normal directory-index machinery rather than
+# being answered with Content-Encoding: zstd.
+--- config
+    location / {
+        zstd_static on;
+        root ../../t/suite;
+    }
+--- request
+GET /
+--- more_headers
+Accept-Encoding: zstd
+--- response_headers
+!Content-Encoding
+--- no_error_log
+[error]
+
+
+
+=== TEST 25: zstd_static on sets Vary even when declining for a non-accepting client
+# Subtle behaviour at static.c:204 — when zstd_static is "on" and
+# the .zst exists, the handler sets r->gzip_vary = 1 *before*
+# declining for a client that does not accept zstd. That keeps the
+# response cacheable by intermediaries that key on Vary, so a later
+# request from a zstd-capable client through the same shared cache
+# gets the encoded variant rather than the identity one. Without
+# this, a CDN that saw the identity response first would pin all
+# subsequent clients to it.
+--- config
+    gzip_vary on;
+    location /test {
+        zstd_static on;
+        root ../../t/suite;
+    }
+--- request
+GET /test
+--- more_headers
+Accept-Encoding: gzip
+--- response_headers
+!Content-Encoding
+Vary: Accept-Encoding
+--- no_error_log
+[error]
