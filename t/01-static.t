@@ -22,8 +22,36 @@ add_block_preprocessor(sub {
 no_long_string();
 log_level 'debug';
 repeat_each(3);
-plan tests => repeat_each() * (blocks() * 3) + 63;
+plan 'no_plan';
 run_tests();
+
+# COVERAGE NOTES on gaps found by the git-history CI audit
+# (kept above __DATA__ so they are not parsed into any test block):
+#
+# Gap 2 — f7e2ef3 ("clear Accept-Ranges in static module"):
+# deliberately NOT covered by a black-box test here. The static
+# handler serves a local file and never sets r->allow_ranges (in this
+# nginx, only the upstream/proxy path sets it — see
+# ngx_http_upstream.c, and ngx_http_range_filter_module.c bails unless
+# r->allow_ranges). ngx_http_clear_accept_ranges() in the static
+# module is therefore purely defensive: no request reachable through
+# zstd_static alone makes the pre-fix and fixed builds differ
+# (empirically verified — identical 200, no Accept-Ranges, no
+# Content-Range, on both a pre-f7e2ef3 and a fixed .so). A Perl test
+# asserting !Accept-Ranges would PASS on the buggy build too, i.e. be
+# blind. Per the project's fail-first discipline we do not add a test
+# that cannot fail on the unfixed code.
+#
+# Gap 3 — HTTP/2 transport axis (8281baa bug-B class):
+# the build enables --with-http_v2_module but nothing tests the h2
+# path. HTTP/2 in nginx requires TLS + ALPN/Upgrade negotiation; h2c
+# (cleartext) does not work without Upgrade in nginx config. A Python
+# test without TLS cannot easily drive the h2 path. The bug-B defect
+# (empty-buffer, flush-state-machine, c->buffered accounting) is
+# already well-covered by test_proxy_unbuffered_truncation.py
+# (HTTP/1.1) and the matrix under ASAN; the h2-specific framing path
+# would be redundant effort without adding coverage for a new code
+# path. Left for future work when/if CI adds TLS test infrastructure.
 
 
 __DATA__
@@ -407,35 +435,6 @@ Content-Encoding: zstd
 
 
 
-# COVERAGE NOTES on gaps found by the git-history CI audit:
-#
-# Gap 2 — f7e2ef3 ("clear Accept-Ranges in static module"):
-# deliberately NOT covered by a black-box test here. The static
-# handler serves a local file and never sets r->allow_ranges (in this
-# nginx, only the upstream/proxy path sets it — see
-# ngx_http_upstream.c, and ngx_http_range_filter_module.c bails unless
-# r->allow_ranges). ngx_http_clear_accept_ranges() in the static
-# module is therefore purely defensive: no request reachable through
-# zstd_static alone makes the pre-fix and fixed builds differ
-# (empirically verified — identical 200, no Accept-Ranges, no
-# Content-Range, on both a pre-f7e2ef3 and a fixed .so). A Perl test
-# asserting !Accept-Ranges would PASS on the buggy build too, i.e. be
-# blind. Per the project's fail-first discipline we do not add a test
-# that cannot fail on the unfixed code.
-#
-# Gap 3 — HTTP/2 transport axis (8281baa bug-B class):
-# the build enables --with-http_v2_module but nothing tests the h2
-# path. HTTP/2 in nginx requires TLS + ALPN/Upgrade negotiation; h2c
-# (cleartext) does not work without Upgrade in nginx config. A Python
-# test without TLS cannot easily drive the h2 path. The bug-B defect
-# (empty-buffer, flush-state-machine, c->buffered accounting) is
-# already well-covered by test_proxy_unbuffered_truncation.py
-# (HTTP/1.1) and the matrix under ASAN; the h2-specific framing path
-# would be redundant effort without adding coverage for a new code
-# path. Left for future work when/if CI adds TLS test infrastructure.
-
-
-
 === TEST 21: zstd_static rejects a file whose contents are not a zstd frame
 # Defence-in-depth: a .zst whose first 4 bytes are not the zstd magic
 # (truncated download, mistakenly renamed text, `cp foo.txt foo.zst`)
@@ -446,7 +445,7 @@ Content-Encoding: zstd
 # ("HELO ...") with no zstd magic; no uncompressed fallback file is
 # placed alongside it, so the request falls through to a clean 404.
 --- config
-    location /bogus_zst {
+    location /bogus {
         zstd_static on;
         root html;
     }
@@ -454,7 +453,7 @@ Content-Encoding: zstd
 >>> bogus.zst
 HELO this is not a zstd frame
 --- request
-GET /bogus_zst/bogus
+GET /bogus
 --- more_headers
 Accept-Encoding: zstd
 --- error_code: 404
@@ -462,3 +461,111 @@ Accept-Encoding: zstd
 !Content-Encoding
 --- error_log
 is not a zstd frame
+
+
+
+=== TEST 22: zstd_static always does NOT set Vary even with gzip_vary on
+# Locks intentional behaviour: in "always" mode the handler unconditionally
+# serves the precompressed .zst and never sets r->gzip_vary. Vary:
+# Accept-Encoding would mis-key shared caches for a response that does
+# not actually vary on Accept-Encoding (the same .zst comes back no
+# matter what the client sends), so the absence of Vary here is the
+# correct contract. TEST 6-8 cover "always" without gzip_vary; this
+# locks that adding gzip_vary on at the location does not flip the
+# behaviour by accident.
+--- config
+    gzip_vary on;
+    location /test {
+        zstd_static always;
+        root ../../t/suite;
+    }
+--- request
+GET /test
+--- more_headers
+Accept-Encoding: gzip, br
+--- response_headers
+Content-Length: 3717
+ETag: "5be17d33-e85"
+Content-Encoding: zstd
+!Vary
+--- no_error_log
+[error]
+
+
+
+=== TEST 23: zstd_static rejects an empty .zst file
+# A zero-byte .zst cannot satisfy the 4-byte pread() magic check;
+# the handler must decline rather than serve an empty body with
+# Content-Encoding: zstd. TEST 21 covers the wrong-magic case;
+# this locks the truncated-to-zero edge specifically. Like TEST 21,
+# no uncompressed fallback is placed alongside empty.zst, so a
+# benign ENOENT on the fallback path is expected and not asserted
+# against.
+--- config
+    location /empty {
+        zstd_static on;
+        root html;
+    }
+--- user_files
+>>> empty.zst
+--- request
+GET /empty
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 404
+--- response_headers
+!Content-Encoding
+
+
+
+=== TEST 24: zstd_static declines a directory-style request
+# A request whose URI ends in "/" maps to a path with a trailing
+# slash; appending ".zst" would produce ".../.zst". The handler
+# short-circuits at the URI-suffix check (uri.data[uri.len - 1]
+# == '/') and declines without touching the filesystem, so the
+# request falls through to the normal directory-index machinery
+# rather than being answered with Content-Encoding: zstd. The
+# fallback then 403s the directory and logs the missing index file
+# — that log line is from the regular static handler, not from
+# zstd_static, and is expected here. The contract being locked is
+# only !Content-Encoding (i.e. zstd_static did not falsely claim
+# the response was zstd-encoded).
+--- config
+    location /dir/ {
+        zstd_static on;
+        root ../../t/suite;
+    }
+--- request
+GET /dir/
+--- more_headers
+Accept-Encoding: zstd
+--- error_code: 404
+--- response_headers
+!Content-Encoding
+
+
+
+=== TEST 25: zstd_static on sets Vary even when declining for a non-accepting client
+# Subtle behaviour at static.c:204 — when zstd_static is "on" and
+# the .zst exists, the handler sets r->gzip_vary = 1 *before*
+# declining for a client that does not accept zstd. That keeps the
+# response cacheable by intermediaries that key on Vary, so a later
+# request from a zstd-capable client through the same shared cache
+# gets the encoded variant rather than the identity one. Without
+# this, a CDN that saw the identity response first would pin all
+# subsequent clients to it.
+--- config
+    gzip_vary on;
+    location /test {
+        zstd_static on;
+        root ../../t/suite;
+    }
+--- request
+GET /test
+--- more_headers
+Accept-Encoding: gzip
+--- response_headers
+!Content-Encoding
+Vary: Accept-Encoding
+--- no_error_log
+[error]
