@@ -520,12 +520,16 @@ Accept-Encoding: zstd
 
 === TEST 24: zstd_static declines a directory-style request
 # A request whose URI ends in "/" maps to a path with a trailing
-# slash; appending ".zst" would produce ".../.zst", which is either
-# a directory or a non-existent file. The handler must short-circuit
-# at the URI-suffix check (uri.data[uri.len - 1] == '/') and decline
-# without touching the filesystem, so the request falls through to
-# the normal directory-index machinery rather than being answered
-# with Content-Encoding: zstd.
+# slash; appending ".zst" would produce ".../.zst". The handler
+# short-circuits at the URI-suffix check (uri.data[uri.len - 1]
+# == '/') and declines without touching the filesystem, so the
+# request falls through to the normal directory-index machinery
+# rather than being answered with Content-Encoding: zstd. The
+# fallback then 403s the directory and logs the missing index file
+# — that log line is from the regular static handler, not from
+# zstd_static, and is expected here. The contract being locked is
+# only !Content-Encoding (i.e. zstd_static did not falsely claim
+# the response was zstd-encoded).
 --- config
     location /dir/ {
         zstd_static on;
@@ -535,10 +539,9 @@ Accept-Encoding: zstd
 GET /dir/
 --- more_headers
 Accept-Encoding: zstd
+--- error_code: 403
 --- response_headers
 !Content-Encoding
---- no_error_log
-[error]
 
 
 
