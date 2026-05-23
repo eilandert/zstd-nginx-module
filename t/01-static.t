@@ -445,7 +445,7 @@ Content-Encoding: zstd
 # ("HELO ...") with no zstd magic; no uncompressed fallback file is
 # placed alongside it, so the request falls through to a clean 404.
 --- config
-    location /bogus_zst {
+    location / {
         zstd_static on;
         root html;
     }
@@ -453,7 +453,7 @@ Content-Encoding: zstd
 >>> bogus.zst
 HELO this is not a zstd frame
 --- request
-GET /bogus_zst/bogus
+GET /bogus
 --- more_headers
 Accept-Encoding: zstd
 --- error_code: 404
@@ -464,13 +464,15 @@ is not a zstd frame
 
 
 
-=== TEST 22: zstd_static always combined with gzip_vary on
-# TEST 6-8 cover "always" without Vary; TEST 15-16 cover "on" with
-# Vary. The "always" + "gzip_vary on" combination is a real-world
-# config (origin serves precompressed assets unconditionally and the
-# CDN still wants Vary on the response) and was not exercised. The
-# precompressed .zst must be served and Vary: Accept-Encoding must
-# be present.
+=== TEST 22: zstd_static always does NOT set Vary even with gzip_vary on
+# Locks intentional behaviour: in "always" mode the handler unconditionally
+# serves the precompressed .zst and never sets r->gzip_vary. Vary:
+# Accept-Encoding would mis-key shared caches for a response that does
+# not actually vary on Accept-Encoding (the same .zst comes back no
+# matter what the client sends), so the absence of Vary here is the
+# correct contract. TEST 6-8 cover "always" without gzip_vary; this
+# locks that adding gzip_vary on at the location does not flip the
+# behaviour by accident.
 --- config
     gzip_vary on;
     location /test {
@@ -485,7 +487,7 @@ Accept-Encoding: gzip, br
 Content-Length: 3717
 ETag: "5be17d33-e85"
 Content-Encoding: zstd
-Vary: Accept-Encoding
+!Vary
 --- no_error_log
 [error]
 
@@ -500,14 +502,14 @@ Vary: Accept-Encoding
 # benign ENOENT on the fallback path is expected and not asserted
 # against.
 --- config
-    location /empty_zst {
+    location / {
         zstd_static on;
         root html;
     }
 --- user_files
 >>> empty.zst
 --- request
-GET /empty_zst/empty
+GET /empty
 --- more_headers
 Accept-Encoding: zstd
 --- error_code: 404
