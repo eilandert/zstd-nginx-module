@@ -241,16 +241,32 @@ def validate_response(
 RATIO_RE = re.compile(r"^\d+\.\d{3}$")
 
 
-def validate_ratio_log(log_path: pathlib.Path, request_count: int) -> None:
+def validate_ratio_log(
+    log_path: pathlib.Path, request_count: int, timeout: float = 10.0
+) -> None:
     """Assert every logged $zstd_ratio is a finite N.NNN value.
 
     Regression for 064895c ("integer overflow in compression ratio
     calculation"): before the fix bytes_in*1000 could overflow and yield a
     garbage or zero ratio. The CI JavaScript fixture is highly compressible,
     so a correct ratio must parse AND be > 1.0 (output smaller than input).
+
+    $zstd_ratio is written in nginx's *log phase*, which runs after the
+    response body has already been flushed to the client. validate_response
+    therefore returns before nginx has necessarily written the access_log
+    line — a race that widens under the (much slower) ASAN/UBSAN binary and
+    used to fail intermittently with "the ratio code path did not run". Poll
+    for at least request_count non-empty lines before asserting, so a slow
+    log-phase write is waited out rather than mistaken for a missing one.
     """
-    content = read_if_exists(log_path)
-    lines = [line for line in content.splitlines() if line.strip()]
+    deadline = time.monotonic() + timeout
+    lines: list[str] = []
+    while True:
+        content = read_if_exists(log_path)
+        lines = [line for line in content.splitlines() if line.strip()]
+        if len(lines) >= request_count or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
     if not lines:
         raise RuntimeError(
             f"$zstd_ratio log {log_path} is empty — the variable was not "
