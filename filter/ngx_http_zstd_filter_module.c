@@ -20,6 +20,8 @@
 
 typedef struct {
     ngx_str_t                    dict_file;
+    ngx_flag_t                   dict_unsafe;   /* explicit opt-in for the
+                                                 * non-RFC-9842 dict mode; S1/RFC1 */
 } ngx_http_zstd_main_conf_t;
 
 
@@ -258,6 +260,13 @@ static ngx_command_t  ngx_http_zstd_filter_commands[] = {
       ngx_conf_set_str_slot,
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_http_zstd_main_conf_t, dict_file),
+      NULL },
+
+    { ngx_string("zstd_dict_file_unsafe"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_zstd_main_conf_t, dict_unsafe),
       NULL },
 
     ngx_null_command
@@ -1240,6 +1249,10 @@ ngx_http_zstd_create_main_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    /* NGX_CONF_UNSET so ngx_conf_set_flag_slot does not mistake the
+     * pcalloc'd 0 for an already-set value ("is duplicate"). */
+    zmcf->dict_unsafe = NGX_CONF_UNSET;
+
     return zmcf;
 }
 
@@ -1251,6 +1264,27 @@ ngx_http_zstd_init_main_conf(ngx_conf_t *cf, void *conf)
 
     if (zmcf->dict_file.len == 0) {
         return NGX_CONF_OK;
+    }
+
+    /*
+     * RFC1: zstd_dict_file emits Content-Encoding: zstd while compressing with
+     * an external dictionary. That is not HTTP dictionary negotiation: RFC 9842
+     * (Sept 2025) defines the "dcz" content coding and Available-Dictionary for
+     * that. A generic client that only advertises "zstd" cannot decode this
+     * response, and a shared cache keys it as an ordinary zstd variant. Until
+     * dcz is implemented, refuse to start unless the operator explicitly
+     * acknowledges the non-standard, control-both-ends-only mode.
+     */
+    if (zmcf->dict_unsafe != 1) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "\"zstd_dict_file\" produces a non-standard "
+                           "\"Content-Encoding: zstd\" response that only "
+                           "clients sharing the dictionary can decode and that "
+                           "is not negotiated per RFC 9842 (dcz). Set "
+                           "\"zstd_dict_file_unsafe on;\" to acknowledge you "
+                           "control both ends (and key any shared cache "
+                           "accordingly), or remove \"zstd_dict_file\"");
+        return NGX_CONF_ERROR;
     }
 
     if (ngx_conf_full_name(cf->cycle, &zmcf->dict_file, 1) != NGX_OK) {

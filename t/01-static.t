@@ -389,6 +389,7 @@ Accept-Encoding: zstd
 # --- user_files land in <servroot>/html, so use the absolute servroot
 # token Test::Nginx exports for this exact purpose.
 --- http_config
+    zstd_dict_file_unsafe on;
     zstd_dict_file $TEST_NGINX_SERVER_ROOT/html/zstd.dict;
 --- config
     location /filter {
