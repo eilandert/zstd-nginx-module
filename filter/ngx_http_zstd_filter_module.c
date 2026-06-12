@@ -934,6 +934,19 @@ ngx_http_zstd_filter_get_buf(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         ctx->out_buf = cl->buf;
         ngx_free_chain(r->pool, cl);
 
+        /*
+         * ngx_chain_update_chains() resets pos/last on a recycled buffer but
+         * NOT the control flags. This buffer may previously have carried
+         * flush / last_buf / last_in_chain (set in the compress step before
+         * it went downstream). Clear them here so a later ordinary data
+         * buffer cannot trigger a spurious downstream flush or a false
+         * end-of-stream marker. See P2.
+         */
+        ctx->out_buf->flush = 0;
+        ctx->out_buf->sync = 0;
+        ctx->out_buf->last_buf = 0;
+        ctx->out_buf->last_in_chain = 0;
+
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "zstd get_buf: reused free buffer %p", ctx->out_buf);
 
