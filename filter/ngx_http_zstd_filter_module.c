@@ -1075,8 +1075,16 @@ ngx_http_zstd_filter_init_cctx(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    /* Issue #38: Apply target compressed block size if configured */
-#ifdef ZSTD_c_targetCBlockSize
+    /*
+     * Issue #38: Apply target compressed block size if configured.
+     *
+     * Gate on the library version, NOT #ifdef ZSTD_c_targetCBlockSize:
+     * ZSTD_c_targetCBlockSize is an enum member, not a preprocessor macro,
+     * so #ifdef is always false and silently compiled this whole block out
+     * even on libzstd >= 1.5.6 where the parameter is fully supported. The
+     * directive was therefore a permanent no-op. See C1.
+     */
+#if ZSTD_VERSION_NUMBER >= 10506
     if (zlcf->target_cblock_size > 0) {
         if (ngx_http_zstd_set_param(r, cctx, ZSTD_c_targetCBlockSize,
                                     (int) zlcf->target_cblock_size,
@@ -1507,7 +1515,7 @@ close:
             }
         }
 
-#ifdef ZSTD_c_targetCBlockSize
+#if ZSTD_VERSION_NUMBER >= 10506
         if (conf->target_cblock_size > 0) {
             srv = ZSTD_CCtxParams_setParameter(
                       cp, ZSTD_c_targetCBlockSize,
@@ -1804,18 +1812,21 @@ ngx_http_zstd_check_size_int_max(ngx_conf_t *cf, void *post, void *data)
     }
 
     /*
-     * ZSTD_c_targetCBlockSize first appears in libzstd 1.5.6. On older
-     * versions the parameter is undefined and the apply-site at
-     * ngx_http_zstd_filter_init_cctx() is #ifdef'd out — meaning the
-     * directive is silently ignored at runtime with no feedback to the
-     * operator. Warn loudly at config load so the config is
-     * recognisable as a no-op rather than appearing to "work" while
-     * having no effect. The directive is still accepted (a hard reject
-     * would break configs that intentionally target newer libzstd at
-     * runtime via library upgrades without rebuilding nginx). Suppress
-     * the warning when the value is 0 (the unset default).
+     * ZSTD_c_targetCBlockSize first works in libzstd 1.5.6. On older
+     * versions the apply-site at ngx_http_zstd_filter_init_cctx() is
+     * version-gated out — meaning the directive is silently ignored at
+     * runtime with no feedback to the operator. Warn loudly at config load
+     * so the config is recognisable as a no-op rather than appearing to
+     * "work" while having no effect. The directive is still accepted (a
+     * hard reject would break configs that intentionally target newer
+     * libzstd at runtime via library upgrades without rebuilding nginx).
+     * Suppress the warning when the value is 0 (the unset default).
+     *
+     * Gate on ZSTD_VERSION_NUMBER, not #ifndef ZSTD_c_targetCBlockSize:
+     * the symbol is an enum member, so #ifndef was always true and this
+     * warning fired even on libzstd >= 1.5.6 where the directive does work.
      */
-#ifndef ZSTD_c_targetCBlockSize
+#if ZSTD_VERSION_NUMBER < 10506
     if (*sp > 0) {
         ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
                            "\"zstd_target_cblock_size\" is set but the "
