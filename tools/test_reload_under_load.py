@@ -199,6 +199,7 @@ events {{ worker_connections 256; }}
 http {{
     access_log off;
     default_type application/octet-stream;
+    zstd_dict_file_unsafe on;
     zstd_dict_file {dict_path};
     zstd on;
     zstd_comp_level 6;

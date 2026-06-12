@@ -38,6 +38,7 @@ pid $WORK/logs/nginx.pid;
 events { worker_connections 64; }
 http {
     access_log off;
+    zstd_dict_file_unsafe on;
     zstd_dict_file $WORK/html/zstd.dict;
     server {
         listen 127.0.0.1:18099;

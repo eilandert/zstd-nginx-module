@@ -708,6 +708,8 @@ existing bypass behaviour cacheable without poisoning.
 
 Loads a pre-trained zstd dictionary for use during compression. Dictionaries can significantly improve compression ratios for small, structurally similar responses (e.g. JSON API responses).
 
+> **Requires explicit opt-in.** This directive emits an ordinary `Content-Encoding: zstd` response that was compressed with an external dictionary. That is **not** HTTP dictionary negotiation — [RFC 9842](https://www.rfc-editor.org/rfc/rfc9842) (Sept 2025) defines the `dcz` content coding and `Available-Dictionary` for that, which this module does not yet implement. A generic client that only advertises `Accept-Encoding: zstd` **cannot decode** the result, and a shared cache keys it as an ordinary zstd variant. nginx therefore refuses to start with `zstd_dict_file` set unless you also set `zstd_dict_file_unsafe on;`, acknowledging that you control both ends and will key any shared cache accordingly.
+
 > **Warning:** The `Content-Encoding: zstd` token in HTTP does not include any mechanism for the client to discover or negotiate which dictionary the server is using. Only use this directive if you control both ends of the connection and can guarantee that both the server and client use the same dictionary (for example, by advertising it via a custom HTTP header). See [tokers/zstd-nginx-module#2](https://github.com/tokers/zstd-nginx-module/issues/2) for background.
 
 > **Parameter precedence with a dictionary.** A `ZSTD_CDict` bakes in the compression parameters it was built with, and libzstd's `ZSTD_CCtx_refCDict()` lets those supersede the per-request CCtx parameters. With a dictionary loaded, `zstd_window_log` is therefore **not** a guaranteed window cap, and `zstd_max_cctx_memory`'s estimate (computed without the dictionary's baked parameters) can differ from the memory actually used at runtime. The dictionary's own level-derived window wins. The CDict is built per distinct (`zstd_comp_level`, `zstd_window_log`) combination, so changing either in a child `location` rebuilds it rather than silently reusing the parent's.
@@ -718,7 +720,8 @@ Loads a pre-trained zstd dictionary for use during compression. Dictionaries can
 http {
     # Loaded once per cycle; must be readable by the nginx user.
     # Train it with: zstd --train samples/*.json -o /etc/nginx/api.dict
-    zstd_dict_file  /etc/nginx/api.dict;
+    zstd_dict_file        /etc/nginx/api.dict;
+    zstd_dict_file_unsafe on;   # required: acknowledges non-RFC-9842 mode
 
     zstd            on;
     zstd_types      application/json;
