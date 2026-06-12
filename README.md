@@ -191,7 +191,8 @@ Notes on the libzstd floor — these are enforced in code, not assumed:
   values are also unsupported and are clamped to `1` with a warning
   (guarded by `#if ZSTD_VERSION_NUMBER >= 10400`).
 * **< 1.5.6**: `zstd_target_cblock_size` has no effect — the directive
-  is accepted but silently ignored (`#ifdef ZSTD_c_targetCBlockSize`).
+  is accepted but silently ignored (apply path gated by
+  `#if ZSTD_VERSION_NUMBER >= 10506`, with a config-load warning).
   Everything else works. This fallback path is exercised in CI by a
   dedicated "Build (libzstd 1.4.x — fallback paths)" job that links the
   module against a privately built libzstd 1.4.x and runs the
