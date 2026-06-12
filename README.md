@@ -661,6 +661,8 @@ Loads a pre-trained zstd dictionary for use during compression. Dictionaries can
 
 > **Warning:** The `Content-Encoding: zstd` token in HTTP does not include any mechanism for the client to discover or negotiate which dictionary the server is using. Only use this directive if you control both ends of the connection and can guarantee that both the server and client use the same dictionary (for example, by advertising it via a custom HTTP header). See [tokers/zstd-nginx-module#2](https://github.com/tokers/zstd-nginx-module/issues/2) for background.
 
+> **Parameter precedence with a dictionary.** A `ZSTD_CDict` bakes in the compression parameters it was built with, and libzstd's `ZSTD_CCtx_refCDict()` lets those supersede the per-request CCtx parameters. With a dictionary loaded, `zstd_window_log` is therefore **not** a guaranteed window cap, and `zstd_max_cctx_memory`'s estimate (computed without the dictionary's baked parameters) can differ from the memory actually used at runtime. The dictionary's own level-derived window wins. The CDict is built per distinct (`zstd_comp_level`, `zstd_window_log`) combination, so changing either in a child `location` rebuilds it rather than silently reusing the parent's.
+
 **Example:**
 
 ```nginx
