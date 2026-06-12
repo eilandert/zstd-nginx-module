@@ -1296,7 +1296,15 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         return NGX_CONF_ERROR;
     }
 
-    ngx_conf_merge_ptr_value(conf->dict, prev->dict, NULL);
+    /*
+     * NOTE: do NOT ngx_conf_merge_ptr_value(conf->dict, prev->dict, NULL)
+     * here. That copied the parent pointer before the level/window
+     * comparison below, leaving conf->dict non-NULL so the "build a fresh
+     * child CDict" branch could never run — a child that changed
+     * zstd_comp_level silently inherited the parent-level CDict. The dict is
+     * resolved explicitly in the block below instead. See C2.
+     */
+
     /*
      * Default the output buffer size to ZSTD_CStreamOutSize() — the
      * encoder's own recommended output granularity (~128 KB). It is the
@@ -1326,17 +1334,25 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     if (conf->enable && zmcf->dict_file.len > 0) {
 
-        if (conf->level == prev->level && prev->dict != NULL) {
+        if (prev->dict != NULL
+            && conf->level == prev->level
+            && conf->window_log == prev->window_log)
+        {
             /*
-             * Same compression level and parent already loaded the dict:
-             * reuse it to avoid redundant loading.
+             * Parent already loaded a CDict and every CDict-affecting
+             * parameter matches: reuse it to avoid redundant loading.
+             * window_log is part of the key because a CDict bakes in
+             * compression parameters; a child that changes it must not
+             * silently share the parent's.
              */
             conf->dict = prev->dict;
 
-        } else if (conf->dict == NULL) {
+        } else {
             /*
-             * Either levels differ or parent was disabled (prev->dict == NULL):
-             * load the dict fresh for this location's compression level.
+             * No usable parent CDict, or this location changed a
+             * CDict-affecting parameter: load the dict fresh for this
+             * location's own parameters. (conf->dict is NULL here — the
+             * premature merge that used to pre-populate it was removed.)
              */
 
             fd = ngx_open_file(zmcf->dict_file.data, NGX_FILE_RDONLY,
