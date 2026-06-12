@@ -231,6 +231,8 @@ This filter module compresses responses on the fly using zstd. It runs after the
 > ```
 >
 > Swap the two lines to prefer `brotli`. If you require a fixed winner regardless of operator load order, prefer a static build (or pick one of the two filters per location).
+>
+> **Selection policy — server preference, not client qvalue ranking.** When several encoders are enabled and the client lists more than one as acceptable, the winner is decided by **server-side filter order** (zstd runs first), **not** by the client's relative `q` weights. So `Accept-Encoding: zstd;q=0.5, gzip;q=0.9` still yields `zstd`, even though the client ranked `gzip` higher. This is a deliberate server-preference policy. RFC 9110 §12.5.3 describes preferring the acceptable coding with the highest non-zero qvalue, which a single per-coding filter cannot implement (it cannot see the other codings' weights); honouring it would require a shared negotiation step ahead of the body filters. The module still honours each coding's own `q=0` as an absolute "not acceptable" — only the *relative* ranking between acceptable codings is server-decided.
 
 ---
 
@@ -831,7 +833,7 @@ differs so PR feedback stays fast:
 | **Build & Test** | every push & PR | Compiles the module against **nginx 1.31.0 mainline** and **Angie 1.11.5** with strict `-Werror` flags, then runs the full test suite: 46 `Test::Nginx::Socket` filter tests, 21 static-module tests, and end-to-end Python smoke tests (truncation, `Vary`, boundary sizes, repeated/concurrent requests, terminal-frame, the proxy-unbuffered and compression-matrix regressions, per-request CCtx isolation, reload-under-load, `zstd_long`/LDM, `$zstd_ratio`). A separate matrix entry rebuilds against **libzstd 1.4.x** (from source) to exercise the `< 1.5.6` and `≥ 1.4.0` fallback paths, and a parallel job rebuilds with **ASAN+UBSAN** and re-runs the smoke tests plus a `zstd_dict_file` config-reload leak check. A 10-minute mixed-load soak under ASAN+UBSAN runs on the weekly schedule. |
 | **CodeQL** | every push & PR + weekly | GitHub's `security-extended` C/C++ analysis against a real module build. |
 | **Security Scanners** | every push & PR + weekly | flawfinder, clang-tidy (`cert-*`, `bugprone-*`), and semgrep, with results uploaded as SARIF to the Security tab. |
-| **Fuzzing** | nightly + PRs touching the parser | A libFuzzer harness for the `ngx_http_zstd_accept_encoding()` / `ngx_http_zstd_eval_qvalue()` RFC 7231 `Accept-Encoding`/q-value parser. The fuzz target is sliced from the shipped header at build time, so there is no copy drift. See [`fuzz/README.md`](fuzz/README.md). |
+| **Fuzzing** | nightly + PRs touching the parser | A libFuzzer harness for the `ngx_http_zstd_accept_encoding()` / `ngx_http_zstd_eval_qvalue()` RFC 9110 `Accept-Encoding`/q-value parser. The fuzz target is sliced from the shipped header at build time, so there is no copy drift. See [`fuzz/README.md`](fuzz/README.md). |
 | **Valgrind Memcheck** | monthly + manual dispatch | A full Memcheck soak with `--track-origins=yes`, catching uninitialised-value reads and leaks that ASAN cannot. Monthly because a valgrind soak is ~20–50× slower than native. |
 
 The test suite includes a dedicated regression test for every known
