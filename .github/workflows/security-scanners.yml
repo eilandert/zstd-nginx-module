@@ -131,11 +131,21 @@ jobs:
             # the noisier bugprone-*/clang-analyzer-unix.* checks are reported
             # to the log/SARIF but do not gate (they flag nginx pool idioms);
             # promote them to the gating set once a checked-in baseline exists.
+            #
+            # clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+            # is excluded: it is the C11 Annex K checker that flags every
+            # memcpy/memset/strcpy and demands the *_s bounded variants
+            # (memset_s, ...). Annex K is optional and not implemented by glibc,
+            # and nginx zeroes/copies exclusively through ngx_memzero/ngx_memcpy
+            # (= memset/memcpy), so this checker fires on every such call (here:
+            # the ngx_memzero in the compress loop and the static handler) with
+            # no portable fix. It is a documented FP for nginx-idiom code; the
+            # rest of clang-analyzer-security.* and all cert-* stay gating.
             # INCLUDES and the pkg-config output are flag lists that MUST
             # word-split into individual clang-tidy compiler arguments.
             # shellcheck disable=SC2086,SC2046
             clang-tidy "$f" \
-              --checks='-*,cert-*,clang-analyzer-security.*' \
+              --checks='-*,cert-*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling' \
               --warnings-as-errors='*' \
               -- -DZSTD_STATIC_LINKING_ONLY $INCLUDES $(pkg-config --cflags libzstd) \
               2>&1 | tee -a clang-tidy.log || status=1
