@@ -67,18 +67,30 @@ jobs:
           path: ~/.semgrep
           key: semgrep-rules-${{ runner.os }}-p-c-security-audit
 
-      - name: Cache nginx-dev generated headers
-        id: nginx-dev-objs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /usr/share/nginx/src/objs
-          key: nginx-dev-objs-${{ runner.os }}-${{ hashFiles('/var/lib/dpkg/info/nginx-dev.list') }}
-
-      - name: Generate nginx build headers (for clang-tidy)
-        if: steps.nginx-dev-objs.outputs.cache-hit != 'true'
+      - name: Configure a real nginx source tree (for clang-tidy headers)
         run: |
-          cd /usr/share/nginx/src
-          CC=gcc ./configure --with-compat --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null 2>&1 || true
+          # clang-tidy must actually compile the translation unit, which needs
+          # the COMPLETE nginx headers — including the generated
+          # objs/ngx_auto_config.h and objs/ngx_auto_headers.h. The nginx-dev
+          # package ships headers but NOT the build system (no auto/configure),
+          # so it can never generate those: clang-tidy then aborted with
+          # "'ngx_auto_headers.h' file not found" — a clang-diagnostic-error
+          # that failed the GATING pass on every run (a false gate, not a real
+          # cert-/security finding). Download + configure a real nginx source,
+          # exactly like build-test.yml's scan-build job.
+          set -euo pipefail
+          ver=$(curl -fsSL https://nginx.org/en/download.html \
+            | grep -oP 'nginx-\K[0-9]+\.[0-9]+\.[0-9]+(?=\.tar\.gz)' \
+            | sort -V | tail -1)
+          echo "Using nginx $ver to generate lint headers"
+          wget -q "https://nginx.org/download/nginx-${ver}.tar.gz"
+          tar -xzf "nginx-${ver}.tar.gz"
+          cd "nginx-${ver}"
+          CC=gcc ./configure --with-compat \
+            --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
+          test -f objs/ngx_auto_config.h
+          echo "NGINX_SRC_TREE=$PWD" >> "$GITHUB_ENV"
+          echo "✓ ngx_auto_config.h generated"
 
       - name: flawfinder (security risk scanner, SARIF)
         run: |
@@ -103,9 +115,10 @@ jobs:
       - name: clang-tidy (cert-*, bugprone-*, clang-analyzer-security.*)
         run: |
           set -euo pipefail
-          NGINX_OBJS=/usr/share/nginx/src/objs
-          NGINX_INCLUDES=$(dpkg -L nginx-dev 2>/dev/null | grep 'ngx_config.h' | head -1 | xargs dirname || echo /usr/include/nginx)
-          INCLUDES="-I$NGINX_INCLUDES -I$NGINX_OBJS -I/usr/include"
+          N="$NGINX_SRC_TREE"
+          INCLUDES="-I$N/src/core -I$N/src/event -I$N/src/event/modules \
+            -I$N/src/event/quic -I$N/src/os/unix -I$N/objs -I$N/src/http \
+            -I$N/src/http/modules -I$N/src/http/v2 -I/usr/include"
           : > clang-tidy.log
           status=0
           for f in \
